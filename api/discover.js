@@ -1,5 +1,17 @@
 const H={'content-type':'application/json; charset=utf-8','cache-control':'no-store'};
 function extractText(d){return (d?.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim()}
+const GEMINI_MODELS=['gemini-3.6-flash','gemini-2.5-flash'];
+async function callGemini(key,payload){
+ let last={status:502,data:{}};
+ for(const model of GEMINI_MODELS){
+  const url='https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key);
+  const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
+  const d=await r.json().catch(()=>({})); last={status:r.status,data:d,model};
+  if(r.ok)return {ok:true,status:r.status,data:d,model};
+  if(r.status!==429) break;
+ }
+ return {ok:false,...last};
+}
 function parsePlaces(text){
  text=String(text||'').trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/\s*```$/,'');
  let a;try{a=JSON.parse(text)}catch(e){const i=text.indexOf('['),j=text.lastIndexOf(']');if(i<0||j<i)throw new Error('La IA no devolvió JSON válido');a=JSON.parse(text.slice(i,j+1))}
@@ -29,12 +41,10 @@ MUY IMPORTANTE: para cada lugar devuelve las COORDENADAS GEOGRÁFICAS REALES Y E
 Devuelve aproximadamente ${prefs.amount==='complete'?'6 a 12':'4 a 6'} resultados. JSON EXCLUSIVO:
 [{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":100,"lat":43.123456,"lon":-1.234567}]`;
  try{
-  const url='https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key='+encodeURIComponent(key);
-  const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.1,responseMimeType:'application/json'}})});
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok)return res.status(r.status>=500?502:r.status).json({error:d?.error?.message||('Gemini HTTP '+r.status)});
-  const places=parsePlaces(extractText(d));
+  const g=await callGemini(key,{contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.1,responseMimeType:'application/json'}});
+  if(!g.ok)return res.status(g.status>=500?502:g.status).json({error:g.data?.error?.message||('Gemini HTTP '+g.status)});
+  const places=parsePlaces(extractText(g.data));
   if(!places.length)return res.status(502).json({error:'Gemini respondió, pero no devolvió lugares utilizables'});
-  return res.status(200).json({places,source:'gemini'});
+  return res.status(200).json({places,source:'gemini',model:g.model});
  }catch(e){return res.status(502).json({error:e.message||'No se pudo contactar con Gemini'})}
 };
