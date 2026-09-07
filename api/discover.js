@@ -37,7 +37,7 @@ CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
 PREFERENCIAS: se moverá ${movement}; quiere ${amount}; petición libre: ${notes||'ninguna'}.
 Adapta DE VERDAD el alcance geográfico: andando prioriza compacto; en coche puedes ampliar; si pide pueblos cercanos o una distancia concreta, respétala SIN imponer límite fijo.
 Prioriza calidad turística real. No inventes ni incluyas servicios, tiendas, farmacias, restaurantes, hoteles o parkings.
-MUY IMPORTANTE: para cada lugar devuelve las COORDENADAS GEOGRÁFICAS REALES Y EXACTAS del punto visitable (latitud y longitud decimal), no las del municipio ni una aproximación. Usa el nombre exacto por el que se localiza en Google Maps. Si no estás razonablemente seguro de las coordenadas de un lugar, NO lo incluyas.
+MUY IMPORTANTE: usa el nombre exacto y específico por el que se localiza el punto en un mapa (incluye monumento/edificio concreto y localidad cuando ayude). La aplicación verificará las coordenadas posteriormente con un geocodificador real.
 Devuelve aproximadamente ${prefs.amount==='complete'?'6 a 12':'4 a 6'} resultados. JSON EXCLUSIVO:
 [{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":100,"lat":43.123456,"lon":-1.234567}]`;
  try{
