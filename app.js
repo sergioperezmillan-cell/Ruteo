@@ -68,7 +68,16 @@ async function autocomplete(q){
 // Descubrimiento v11: el navegador ya no consulta directamente bases externas de POIs.
 // La consulta se hace en una Netlify Function del mismo sitio, evitando bloqueos CORS.
 async function discoverPlaces(lat,lon,placeName,contextName,preferences={}){const r=await fetch('/api/discover',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lat,lon,name:placeName,context:contextName||placeName,preferences})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));if(!Array.isArray(d.places)||!d.places.length)throw new Error(d.error||'La IA no ha devuelto lugares para ese sitio.');return d.places;}
-async function geocodeCandidate(p,placeName){try{const g=await geocode(`${p.name}, ${placeName}`);return {...p,lat:+g.lat,lon:+g.lon};}catch(e){} try{const g=await geocode(p.name);return {...p,lat:+g.lat,lon:+g.lon};}catch(e){} return null;}
+// Nunca usamos las coordenadas devueltas por la IA como fuente de navegación.
+// La IA decide QUÉ visitar; Nominatim/Photon verifican DÓNDE está cada lugar.
+async function geocodeCandidate(p,placeName){
+ const short=shortPlaceName(placeName);
+ const queries=[`${p.name}, ${placeName}`,`${p.name}, ${short}`,p.name];
+ for(const q of queries){
+  try{const g=await geocode(q); if(Number.isFinite(+g.lat)&&Number.isFinite(+g.lon)) return {...p,lat:+g.lat,lon:+g.lon,verified:true};}catch(e){}
+ }
+ return null;
+}
 
 $('#place').addEventListener('input',e=>{
  chosenPlace=null; clearTimeout(suggestTimer);
@@ -106,7 +115,12 @@ $('#discover').onclick=async()=>{
    const raw=await discoverPlaces(g.lat,g.lon,placeContext,fullContext,preferences);
    status('📍 Localizando los sitios recomendados…');
    const located=[];
-   for(const p of raw.slice(0,12)){if(Number.isFinite(+p.lat)&&Number.isFinite(+p.lon)&&Math.abs(+p.lat)<=90&&Math.abs(+p.lon)<=180) located.push({...p,lat:+p.lat,lon:+p.lon}); else {const x=await geocodeCandidate(p,g.display_name||q);if(x)located.push(x)}}
+   // Verificamos TODOS los puntos, incluso si Gemini ha dado coordenadas.
+   // Así un cambio de modelo no puede desplazar la ruta por coordenadas inventadas.
+   for(const p of raw.slice(0,12)){
+     const x=await geocodeCandidate(p,g.display_name||q);
+     if(x) located.push(x);
+   }
    const seen=new Set();
    let ranked=located.filter(p=>{let k=p.name.toLowerCase().trim();if(seen.has(k))return false;seen.add(k);return true})
     .map(p=>({...p,km:distance({lat:+g.lat,lon:+g.lon},p)}))
@@ -142,10 +156,11 @@ $('#optimize').onclick=async()=>{
  else{optimized=nearest(route,route[0]);optimized.startType='first';optimized.startPoint={lat:optimized[0].lat,lon:optimized[0].lon,name:optimized[0].name}}
  optimized.returnToStart=returnToStart;
  const returnItem=returnToStart?`<div class="routeItem routeReturn"><div class="num">↩</div><div><b>Volver al punto de inicio</b><div class="meta">${esc(optimized.startPoint.name)}</div></div></div>`:'';
- $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3>'+optimized.map((p,i)=>`<div class="routeItem"><div class="num">${i+1}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)}</div></div></div>`).join('')+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
+ $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> A = 1, B = 2, C = 3…</div>'+optimized.map((p,i)=>{const letter=String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${i+1}</div><div class="mapsLetter">${letter}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)} · Maps: ${letter}</div></div></div>`}).join('')+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
 };
 function nearest(items,start){let left=[...items],out=[],cur=start;while(left.length){left.sort((a,b)=>distance(cur,a)-distance(cur,b));cur=left.shift();out.push(cur)}return out}
-$('#maps').onclick=()=>{if(!optimized.length)return;const pts=optimized.map(p=>`${p.lat},${p.lon}`), start=$('input[name=start]:checked').value, circular=!!optimized.returnToStart;let origin,destination,wp;if(start==='current'){origin='My Location';destination=circular?'My Location':pts[pts.length-1];wp=circular?pts:pts.slice(0,-1)}else if(start==='custom'){origin=`${optimized.startPoint?.lat},${optimized.startPoint?.lon}`;destination=circular?origin:pts[pts.length-1];wp=circular?pts:pts.slice(0,-1)}else{origin=pts[0];destination=circular?origin:pts[pts.length-1];wp=circular?pts.slice(1):pts.slice(1,-1)}let url='https://www.google.com/maps/dir/?api=1&travelmode='+mode+'&origin='+encodeURIComponent(origin)+'&destination='+encodeURIComponent(destination);if(wp.length)url+='&waypoints='+encodeURIComponent(wp.join('|'));window.open(url,'_blank')};
+// Enviamos nombre + coordenadas: intentamos conservar la etiqueta legible sin perder la posición verificada.
+$('#maps').onclick=()=>{if(!optimized.length)return;const mapPoint=p=>`${p.name} (${p.lat},${p.lon})`, pts=optimized.map(mapPoint), start=$('input[name=start]:checked').value, circular=!!optimized.returnToStart;let origin,destination,wp;if(start==='current'){origin='My Location';destination=circular?'My Location':pts[pts.length-1];wp=circular?pts:pts.slice(0,-1)}else if(start==='custom'){origin=`${optimized.startPoint?.name} (${optimized.startPoint?.lat},${optimized.startPoint?.lon})`;destination=circular?origin:pts[pts.length-1];wp=circular?pts:pts.slice(0,-1)}else{origin=pts[0];destination=circular?origin:pts[pts.length-1];wp=circular?pts.slice(1):pts.slice(1,-1)}let url='https://www.google.com/maps/dir/?api=1&travelmode='+mode+'&origin='+encodeURIComponent(origin)+'&destination='+encodeURIComponent(destination);if(wp.length)url+='&waypoints='+encodeURIComponent(wp.join('|'));window.open(url,'_blank')};
 $('#back').onclick=()=>showStep(3);
 updateKeyUI();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
@@ -158,4 +173,22 @@ document.querySelectorAll('.plannerCard').forEach(b=>b.onclick=()=>setPlanner(b.
 async function sendChat(){const text=$('#chatText').value.trim();if(!text||!chosenPlace)return;const btn=$('#sendChat');btn.disabled=true;$('#chatText').value='';addChat('user',text);try{status('🧠 La IA está preparando tu lista…');const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({destination:chosenPlace.display_name||$('#place').value,lat:+chosenPlace.lat,lon:+chosenPlace.lon,history:chatHistory,message:text})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));addChat('ai',d.reply||'He actualizado la propuesta.');chatHistory.push({role:'user',text},{role:'assistant',text:d.reply||''});chatPlaces=Array.isArray(d.places)?d.places:[];if(chatPlaces.length){$('#useChatPlaces').classList.remove('hidden');status('📍 Propuesta actual: '+chatPlaces.length+' lugares con coordenadas.')}else status('Sigue concretando qué quieres visitar.')}catch(e){addChat('ai','⚠️ '+(e.message||'No he podido responder ahora.'));status('')}finally{btn.disabled=false}}
 $('#sendChat').onclick=sendChat;
 $('#chatText').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});
-$('#useChatPlaces').onclick=()=>{if(!chatPlaces.length)return;const g=chosenPlace;const seen=new Set();pois=chatPlaces.filter(p=>!seen.has(p.name.toLowerCase())&&(seen.add(p.name.toLowerCase()),true)).map(p=>({...p,km:distance({lat:+g.lat,lon:+g.lon},{lat:+p.lat,lon:+p.lon})}));selected.clear();pois.forEach((_,i)=>selected.add(i));$('#resultsTitle').textContent='Tu selección para '+(g.display_name.split(',')[0]||$('#place').value);render();showStep(3)};
+$('#useChatPlaces').onclick=async()=>{
+ if(!chatPlaces.length)return;
+ const btn=$('#useChatPlaces'); btn.disabled=true;
+ try{
+  status('📍 Verificando en el mapa la ubicación real de cada lugar…');
+  const g=chosenPlace, seen=new Set(), verified=[];
+  for(const p of chatPlaces){
+   const key=p.name.toLowerCase().trim(); if(!p.name||seen.has(key)) continue; seen.add(key);
+   const x=await geocodeCandidate(p,g.display_name||$('#place').value);
+   if(x) verified.push(x);
+  }
+  pois=verified.map(p=>({...p,km:distance({lat:+g.lat,lon:+g.lon},{lat:+p.lat,lon:+p.lon})}));
+  if(!pois.length) throw new Error('No he podido verificar en el mapa los lugares propuestos.');
+  selected.clear();pois.forEach((_,i)=>selected.add(i));
+  $('#resultsTitle').textContent='Tu selección para '+(g.display_name.split(',')[0]||$('#place').value);
+  render();showStep(3);status('');
+ }catch(e){status('⚠️ '+(e.message||'No se pudieron verificar los lugares.'))}
+ finally{btn.disabled=false}
+};
