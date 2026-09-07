@@ -124,7 +124,13 @@ $('#discover').onclick=async()=>{
 };
 
 $('#selectTop').onclick=()=>{selected.clear();pois.slice(0,6).forEach((_,i)=>selected.add(i));render()};
-$('#continue').onclick=()=>showStep(4);
+$('#continue').onclick=()=>{
+ // Hereda el desplazamiento elegido en la búsqueda automática.
+ // Así no obligamos al usuario a elegirlo dos veces ni volvemos siempre a coche.
+ mode = visitMode || mode;
+ document.querySelectorAll('#modes .chip').forEach(b=>b.classList.toggle('active', b.dataset.mode===mode));
+ showStep(4);
+};
 $('#backToPrefs').onclick=()=>showStep(2);
 document.querySelectorAll('#modes .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#modes .chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');mode=b.dataset.mode});
 document.querySelectorAll('input[name=start]').forEach(r=>r.onchange=()=>$('#customStart').classList.toggle('hidden',$('input[name=start]:checked').value!=='custom'));
