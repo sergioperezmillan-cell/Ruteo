@@ -70,12 +70,42 @@ async function autocomplete(q){
 async function discoverPlaces(lat,lon,placeName,contextName,preferences={}){const r=await fetch('/api/discover',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lat,lon,name:placeName,context:contextName||placeName,preferences})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));if(!Array.isArray(d.places)||!d.places.length)throw new Error(d.error||'La IA no ha devuelto lugares para ese sitio.');return d.places;}
 // Nunca usamos las coordenadas devueltas por la IA como fuente de navegación.
 // La IA decide QUÉ visitar; Nominatim/Photon verifican DÓNDE está cada lugar.
-async function geocodeCandidate(p,placeName){
+async function geoCandidates(q,limit=8){
+ const settled=await Promise.allSettled([nominatimSearch(q,limit),photonSearch(q,limit)]);
+ const all=[];
+ for(const r of settled) if(r.status==='fulfilled') all.push(...r.value);
+ const seen=new Set();
+ return all.filter(x=>{const k=`${x.lat.toFixed(5)},${x.lon.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;});
+}
+function maxDistanceForMovement(m){
+ if(m==='walking') return 30;
+ if(m==='bicycling') return 80;
+ return 200;
+}
+// La IA propone el nombre. Nosotros buscamos VARIAS coincidencias y elegimos la más cercana
+// al destino base, siempre dentro de un radio de seguridad según el medio de transporte.
+async function geocodeCandidate(p,placeName,origin,maxKm){
  const short=shortPlaceName(placeName);
  const queries=[`${p.name}, ${placeName}`,`${p.name}, ${short}`,p.name];
+ let candidates=[];
  for(const q of queries){
-  try{const g=await geocode(q); if(Number.isFinite(+g.lat)&&Number.isFinite(+g.lon)) return {...p,lat:+g.lat,lon:+g.lon,verified:true};}catch(e){}
+  try{
+   const found=await geoCandidates(q,8);
+   candidates.push(...found.map(g=>({...g,query:q})));
+   const valid=found.map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
+    .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm)
+    .sort((a,b)=>a.km-b.km);
+   // Si la búsqueda contextual ya devuelve candidatos válidos, no hace falta abrir más la búsqueda.
+   if(valid.length){const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
+  }catch(e){}
  }
+ // Última oportunidad: entre TODAS las coincidencias obtenidas, gana siempre la más cercana.
+ const seen=new Set();
+ const valid=candidates.filter(g=>{const k=`${g.lat.toFixed(5)},${g.lon.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;})
+  .map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
+  .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm)
+  .sort((a,b)=>a.km-b.km);
+ if(valid.length){const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
  return null;
 }
 
@@ -115,18 +145,19 @@ $('#discover').onclick=async()=>{
    const raw=await discoverPlaces(g.lat,g.lon,placeContext,fullContext,preferences);
    status('📍 Localizando los sitios recomendados…');
    const located=[];
+   const maxKm=maxDistanceForMovement(visitMode);
    // Verificamos TODOS los puntos, incluso si Gemini ha dado coordenadas.
    // Así un cambio de modelo no puede desplazar la ruta por coordenadas inventadas.
    for(const p of raw.slice(0,12)){
-     const x=await geocodeCandidate(p,g.display_name||q);
+   const x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm);
      if(x) located.push(x);
    }
    const seen=new Set();
    let ranked=located.filter(p=>{let k=p.name.toLowerCase().trim();if(seen.has(k))return false;seen.add(k);return true})
     .map(p=>({...p,km:distance({lat:+g.lat,lon:+g.lon},p)}))
     .sort((a,b)=>(b.score-a.score)||(a.km-b.km));
-   // La IA ya ha decidido el alcance según andando/coche y la petición libre.
-   // No aplicamos ningún radio fijo después: no descartamos resultados por distancia.
+   // Seguridad final: jamás aceptamos un POI fuera del radio máximo del medio elegido.
+   ranked=ranked.filter(p=>p.km<=maxKm);
    pois=ranked.slice(0,12);
    if(!pois.length) throw new Error('No he encontrado suficientes lugares de interés cerca de ahí. Prueba con otra sugerencia.');
    selected.clear(); pois.slice(0,Math.min(6,pois.length)).forEach((_,i)=>selected.add(i));
@@ -156,7 +187,7 @@ $('#optimize').onclick=async()=>{
  else{optimized=nearest(route,route[0]);optimized.startType='first';optimized.startPoint={lat:optimized[0].lat,lon:optimized[0].lon,name:optimized[0].name}}
  optimized.returnToStart=returnToStart;
  const returnItem=returnToStart?`<div class="routeItem routeReturn"><div class="num">↩</div><div><b>Volver al punto de inicio</b><div class="meta">${esc(optimized.startPoint.name)}</div></div></div>`:'';
- $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> A = 1, B = 2, C = 3…</div>'+optimized.map((p,i)=>{const letter=String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${i+1}</div><div class="mapsLetter">${letter}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)} · Maps: ${letter}</div></div></div>`}).join('')+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
+ $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> A = 1, B = 2, C = 3…</div>'+optimized.map((p,i)=>{const letter=String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${i+1}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)} · Maps: ${letter}</div></div></div>`}).join('')+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
 };
 function nearest(items,start){let left=[...items],out=[],cur=start;while(left.length){left.sort((a,b)=>distance(cur,a)-distance(cur,b));cur=left.shift();out.push(cur)}return out}
 // Enviamos nombre + coordenadas: intentamos conservar la etiqueta legible sin perder la posición verificada.
@@ -179,9 +210,10 @@ $('#useChatPlaces').onclick=async()=>{
  try{
   status('📍 Verificando en el mapa la ubicación real de cada lugar…');
   const g=chosenPlace, seen=new Set(), verified=[];
+  const maxKm=maxDistanceForMovement(visitMode);
   for(const p of chatPlaces){
    const key=p.name.toLowerCase().trim(); if(!p.name||seen.has(key)) continue; seen.add(key);
-   const x=await geocodeCandidate(p,g.display_name||$('#place').value);
+   const x=await geocodeCandidate(p,g.display_name||$('#place').value,{lat:+g.lat,lon:+g.lon},maxKm);
    if(x) verified.push(x);
   }
   pois=verified.map(p=>({...p,km:distance({lat:+g.lat,lon:+g.lon},{lat:+p.lat,lon:+p.lon})}));
