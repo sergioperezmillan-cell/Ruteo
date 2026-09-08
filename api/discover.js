@@ -29,13 +29,13 @@ module.exports=async (req,res)=>{
  const key=String(process.env.GEMINI_API_KEY||'').trim();
  if(!key)return res.status(500).json({error:'Falta configurar GEMINI_API_KEY en Vercel'});
  if(!name)return res.status(400).json({error:'Falta el lugar'});
- const movement=prefs.movement==='driving'?'EN COCHE':'ANDANDO';
+ const movement=prefs.movement==='driving'?'EN COCHE':(prefs.movement==='bicycling'?'EN BICICLETA':'ANDANDO');
  const amount=prefs.amount==='complete'?'VISITA COMPLETA (puedes proponer más lugares interesantes)':'SOLO LO IMPRESCINDIBLE (selección corta y muy buena)';
  const notes=String(prefs.notes||'').trim();
  const prompt=`Eres un experto guía turístico local. Debes preparar una selección para una persona que va a VISITAR ${context}.
 CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
 PREFERENCIAS: se moverá ${movement}; quiere ${amount}; petición libre: ${notes||'ninguna'}.
-Adapta DE VERDAD el alcance geográfico: andando prioriza compacto; en coche puedes ampliar; si pide pueblos cercanos o una distancia concreta, respétala SIN imponer límite fijo.
+Prioriza SIEMPRE lugares cercanos al centro exacto. Andando mantén una selección compacta; en bici permite algo más; en coche puedes ampliar. Si pide pueblos cercanos o una distancia concreta, respétala. Evita recomendar homónimos o lugares lejanos.
 Prioriza calidad turística real. No inventes ni incluyas servicios, tiendas, farmacias, restaurantes, hoteles o parkings.
 MUY IMPORTANTE: usa el nombre exacto y específico por el que se localiza el punto en un mapa (incluye monumento/edificio concreto y localidad cuando ayude). La aplicación verificará las coordenadas posteriormente con un geocodificador real.
 Devuelve aproximadamente ${prefs.amount==='complete'?'6 a 12':'4 a 6'} resultados. JSON EXCLUSIVO:
