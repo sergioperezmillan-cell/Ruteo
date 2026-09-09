@@ -189,12 +189,10 @@ $('#discover').onclick=async()=>{
    const g=chosenPlace||await geocode(q);
    status('🔎 Buscando lugares de interés reales…');
    const placeContext=shortPlaceName(g.display_name||q); const fullContext=g.display_name||q;
-   status('🤖 Qwen está buscando qué merece la pena ver en '+placeContext+'…');
-   const qwenWatch=setTimeout(()=>status('⏳ Qwen sigue trabajando… si no responde, Ruteo pasará automáticamente a Gemini.'),12000);
+   status('🤖 Qwen · qwen3.8-flash — buscando lugares para '+placeContext+'…');
    const preferences={movement:visitMode,amount:visitAmount,notes:$('#visitNotes').value.trim()};
    const ai=await discoverPlaces(g.lat,g.lon,placeContext,fullContext,preferences);
-   clearTimeout(qwenWatch);
-   setAI(ai.source,ai.model);
+   setAI(ai.source,ai.model); if(ai.attempts?.length){ const q=ai.attempts.filter(a=>a.provider==='Qwen'); if(q.length && ai.source==='Gemini') status('⚠️ Qwen no respondió correctamente → Gemini · '+ai.model+' · lugares encontrados.'); else if(ai.source==='Qwen') status('🤖 Qwen · '+ai.model+' — lugares encontrados.'); }
    const raw=ai.places;
    status('📍 Localizando los sitios recomendados…');
    const located=[];
