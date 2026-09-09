@@ -3,7 +3,8 @@ const STATE_KEY='ruteoStateV33';
 function resetRuteo(){
   try{localStorage.removeItem(STATE_KEY);}catch(e){}
   try{sessionStorage.clear();}catch(e){}
-  window.location.replace(window.location.pathname+'?newRoute=1');
+  // Reset manual: volver siempre a la pantalla inicial sin conservar estado.
+  window.location.href=window.location.pathname+'?newRoute=1';
 }
 let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential', aiProvider='', aiModel='';
 let currentStep=1;
@@ -202,14 +203,10 @@ $('#discover').onclick=async()=>{
    status('📍 Localizando los sitios recomendados…');
    const located=[];
    const maxKm=maxDistanceForMovement(visitMode);
-   // Verificamos TODOS los puntos, incluso si Gemini ha dado coordenadas.
-   // Así un cambio de modelo no puede desplazar la ruta por coordenadas inventadas.
+   // Igual que en v34: las coordenadas que devuelve la IA NO son la fuente de navegación.
+   // La IA decide QUÉ lugar es y da el nombre exacto; después Nominatim/Photon lo localizan
+   // por nombre + localidad y elegimos la coincidencia válida más cercana al destino.
    for(const p of raw.slice(0,15)){
-     const plat=Number(p.lat), plon=Number(p.lon);
-     if(Number.isFinite(plat)&&Number.isFinite(plon)){
-       const km=distance({lat:+g.lat,lon:+g.lon},{lat:plat,lon:plon});
-       if(km<=maxKm){ located.push({...p,lat:plat,lon:plon,verified:true,km}); continue; }
-     }
      const x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm);
      if(x) located.push(x);
    }
