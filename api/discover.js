@@ -4,13 +4,21 @@ const GEMINI_MODELS=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lit
 const QWEN_MODELS=String(process.env.QWEN_MODELS||'qwen3.8-flash,qwen3.7-flash,qwen3.6-flash,qwen3.5-flash').split(',').map(x=>x.trim()).filter(Boolean);
 const QWEN_BASE=String(process.env.QWEN_BASE_URL||'https://trial.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions').trim().replace(/\/$/,'');
 function extractOpenAIText(d){return String(d?.choices?.[0]?.message?.content||'').trim()}
+async function fetchWithTimeout(url,options,ms=20000){
+ const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
+ try{return await fetch(url,{...options,signal:c.signal})}finally{clearTimeout(t)}
+}
 async function callQwen(payload){
  const key=String(process.env.QWEN_API_KEY||'').trim();
  if(!key)return {ok:false,missing:true,status:0,data:{}};
  let last={ok:false,status:502,data:{},model:QWEN_MODELS[0],provider:'Qwen'};
  for(const model of QWEN_MODELS){
-  const r=await fetch(QWEN_BASE,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+key},body:JSON.stringify({model,messages:[{role:'user',content:payload}],temperature:0.1,response_format:{type:'json_object'}})});
-  const d=await r.json().catch(()=>({})); last={ok:r.ok,status:r.status,data:d,model,provider:'Qwen'};
+  let r;
+  try{
+   r=await fetchWithTimeout(QWEN_BASE,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+key},body:JSON.stringify({model,messages:[{role:'user',content:payload}],temperature:0.1,response_format:{type:'json_object'}})},20000);
+  }catch(e){last={ok:false,status:504,data:{error:{message:'Timeout Qwen '+model}},model,provider:'Qwen'};continue}
+  const d=await r.json().catch(()=>({}));
+  last={ok:r.ok,status:r.status,data:d,model,provider:'Qwen'};
   if(r.ok)return last;
   if(![429,500,502,503,504].includes(r.status))break;
  }
@@ -20,10 +28,13 @@ async function callGemini(key,payload){
  let last={status:502,data:{}};
  for(const model of GEMINI_MODELS){
   const url='https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key);
-  const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
-  const d=await r.json().catch(()=>({})); last={status:r.status,data:d,model,provider:'Gemini'};
+  let r;
+  try{r=await fetchWithTimeout(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)},20000)}
+  catch(e){last={status:504,data:{error:{message:'Timeout Gemini '+model}},model,provider:'Gemini'};continue}
+  const d=await r.json().catch(()=>({}));
+  last={status:r.status,data:d,model,provider:'Gemini'};
   if(r.ok)return {ok:true,status:r.status,data:d,model,provider:'Gemini'};
-  if(r.status!==429) break;
+  if(r.status!==429)break;
  }
  return {ok:false,...last};
 }

@@ -3,8 +3,36 @@ function extractQwenText(d){return String(d?.choices?.[0]?.message?.content||'')
 const GEMINI_MODELS=['gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite'];
 const QWEN_MODELS=String(process.env.QWEN_MODELS||'qwen3.8-flash,qwen3.7-flash,qwen3.6-flash,qwen3.5-flash').split(',').map(x=>x.trim()).filter(Boolean);
 const QWEN_BASE=String(process.env.QWEN_BASE_URL||'https://trial.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions').trim().replace(/\/$/,'');
-async function callQwen(prompt){const key=String(process.env.QWEN_API_KEY||'').trim();if(!key)return {ok:false,missing:true};let last={ok:false,status:502,data:{},model:QWEN_MODELS[0],provider:'Qwen'};for(const model of QWEN_MODELS){const r=await fetch(QWEN_BASE,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+key},body:JSON.stringify({model,messages:[{role:'user',content:prompt}],temperature:.2,response_format:{type:'json_object'}})});const d=await r.json().catch(()=>({}));last={ok:r.ok,status:r.status,data:d,model,provider:'Qwen'};if(r.ok)return last;if(![429,500,502,503,504].includes(r.status))break}return last;}
-async function callGemini(key,payload){let last={status:502,data:{}};for(const model of GEMINI_MODELS){const url='https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key);const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});const d=await r.json().catch(()=>({}));last={status:r.status,data:d,model,provider:'Gemini'};if(r.ok)return {ok:true,status:r.status,data:d,model,provider:'Gemini'};if(r.status!==429)break}return {ok:false,...last}}
+async function fetchWithTimeout(url,options,ms=20000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);try{return await fetch(url,{...options,signal:c.signal})}finally{clearTimeout(t)}}
+async function callQwen(prompt){
+ const key=String(process.env.QWEN_API_KEY||'').trim();
+ if(!key)return {ok:false,missing:true};
+ let last={ok:false,status:502,data:{},model:QWEN_MODELS[0],provider:'Qwen'};
+ for(const model of QWEN_MODELS){
+  let r;
+  try{r=await fetchWithTimeout(QWEN_BASE,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+key},body:JSON.stringify({model,messages:[{role:'user',content:prompt}],temperature:.2,response_format:{type:'json_object'}})},20000)}
+  catch(e){last={ok:false,status:504,data:{error:{message:'Timeout Qwen '+model}},model,provider:'Qwen'};continue}
+  const d=await r.json().catch(()=>({}));
+  last={ok:r.ok,status:r.status,data:d,model,provider:'Qwen'};
+  if(r.ok)return last;
+  if(![429,500,502,503,504].includes(r.status))break;
+ }
+ return last;
+}
+async function callGemini(key,payload){
+ let last={status:502,data:{}};
+ for(const model of GEMINI_MODELS){
+  const url='https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key);
+  let r;
+  try{r=await fetchWithTimeout(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)},20000)}
+  catch(e){last={status:504,data:{error:{message:'Timeout Gemini '+model}},model,provider:'Gemini'};continue}
+  const d=await r.json().catch(()=>({}));
+  last={status:r.status,data:d,model,provider:'Gemini'};
+  if(r.ok)return {ok:true,status:r.status,data:d,model,provider:'Gemini'};
+  if(r.status!==429)break;
+ }
+ return {ok:false,...last};
+}
 function parse(t){t=String(t||'').trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/\s*```$/,'');try{return JSON.parse(t)}catch(e){let i=t.indexOf('{'),j=t.lastIndexOf('}');if(i>=0&&j>i)return JSON.parse(t.slice(i,j+1));throw e}}
 function normalizePlaces(o){const seen=new Set();return (Array.isArray(o?.places)?o.places:[]).map((x,i)=>({name:String(x?.name||'').trim(),type:String(x?.type||'lugar de interés'),description:String(x?.description||''),score:Number(x?.score)||100-i,lat:Number(x?.lat),lon:Number(x?.lon)})).filter(x=>x.name&&!seen.has(x.name.toLowerCase())&&(seen.add(x.name.toLowerCase()),true))}
 module.exports=async(req,res)=>{if(req.method!=='POST')return res.status(405).json({error:'Usa POST'});const b=req.body||{},dest=String(b.destination||''),msg=String(b.message||''),hist=Array.isArray(b.history)?b.history.slice(-12):[];if(!dest||!msg)return res.status(400).json({error:'Faltan datos'});const tr=hist.map(x=>`${x.role==='user'?'USUARIO':'ASISTENTE'}: ${x.text}`).join('\n');const prompt=`Eres el asistente turístico conversacional de Ruteo. Destino base: ${dest}, coordenadas ${b.lat}, ${b.lon}. El usuario puede añadir, quitar o pedir lugares. Mantén SIEMPRE la lista completa acumulada en places: no borres lugares anteriores salvo que el usuario pida quitarlos. No inventes lugares. Usa nombres exactos y específicos para poder verificarlos después con un geocodificador real. No necesitas proporcionar coordenadas fiables: la aplicación las buscará después.\n${tr}\nUSUARIO: ${msg}\nResponde SOLO JSON: {"reply":"respuesta breve en español","places":[{"name":"nombre exacto del lugar","type":"categoría","description":"motivo breve","score":100}]}.`;
