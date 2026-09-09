@@ -1,8 +1,54 @@
 const $=s=>document.querySelector(s);
+const STATE_KEY='ruteoStateV32';
 let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential';
+let currentStep=1;
+
+function saveState(){
+ try{
+  const state={
+   version:32,currentStep,pois,selected:[...selected],mode,visitMode,visitAmount,
+   chosenPlace,plannerMode,chatHistory,chatPlaces,
+   place:$('#place')?.value||'',visitNotes:$('#visitNotes')?.value||'',
+   customStart:$('#customStart')?.value||'',start:$('input[name=start]:checked')?.value||'first',
+   returnToStart:!!$('#returnToStart')?.checked,
+   optimizedItems:Array.isArray(optimized)?optimized:[],
+   optimizedMeta:Array.isArray(optimized)?{startType:optimized.startType||'first',startPoint:optimized.startPoint||null,returnToStart:!!optimized.returnToStart}:null,
+   routeList:$('#routeList')?.innerHTML||'',routeActionsVisible:!$('#routeActions')?.classList.contains('hidden')
+  };
+  localStorage.setItem(STATE_KEY,JSON.stringify(state));
+ }catch(e){console.warn('No se pudo guardar el estado',e)}
+}
+function clearState(){try{localStorage.removeItem(STATE_KEY)}catch(e){}}
+function restoreState(){
+ try{
+  const raw=localStorage.getItem(STATE_KEY); if(!raw)return false;
+  const st=JSON.parse(raw); if(!st||st.version!==32)return false;
+  pois=Array.isArray(st.pois)?st.pois:[]; selected=new Set(Array.isArray(st.selected)?st.selected:[]);
+  mode=st.mode||'driving'; visitMode=st.visitMode||'walking'; visitAmount=st.visitAmount||'essential';
+  chosenPlace=st.chosenPlace||null; plannerMode=st.plannerMode||'auto'; chatHistory=Array.isArray(st.chatHistory)?st.chatHistory:[]; chatPlaces=Array.isArray(st.chatPlaces)?st.chatPlaces:[];
+  optimized=Array.isArray(st.optimizedItems)?st.optimizedItems:[];
+  if(st.optimizedMeta){optimized.startType=st.optimizedMeta.startType||'first';optimized.startPoint=st.optimizedMeta.startPoint||null;optimized.returnToStart=!!st.optimizedMeta.returnToStart;}
+  if($('#place'))$('#place').value=st.place||chosenPlace?.display_name||'';
+  if($('#visitNotes'))$('#visitNotes').value=st.visitNotes||'';
+  if($('#customStart'))$('#customStart').value=st.customStart||'';
+  const sr=$(`input[name=start][value="${st.start||'first'}"]`); if(sr)sr.checked=true;
+  $('#customStart')?.classList.toggle('hidden',(st.start||'first')!=='custom');
+  if($('#returnToStart'))$('#returnToStart').checked=!!st.returnToStart;
+  document.querySelectorAll('#visitMode .chip').forEach(b=>b.classList.toggle('active',b.dataset.visitmode===visitMode));
+  document.querySelectorAll('#visitAmount .chip').forEach(b=>b.classList.toggle('active',b.dataset.amount===visitAmount));
+  document.querySelectorAll('#modes .chip').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
+  setPlanner(plannerMode);
+  const cm=$('#chatMessages');
+  if(cm){cm.innerHTML='<div class="chatMsg ai">👋 Ya sé cuál es tu destino base. Dime qué lugares quieres visitar o qué tipo de sitios buscas. Puedes hablarme con normalidad.</div>'; for(const h of chatHistory){addChat(h.role==='user'?'user':'ai',h.text||'');}}
+  if(chatPlaces.length)$('#useChatPlaces')?.classList.remove('hidden');
+  if(pois.length){render(); if(st.routeList)$('#routeList').innerHTML=st.routeList; $('#routeActions')?.classList.toggle('hidden',!st.routeActionsVisible);}
+  currentStep=Number(st.currentStep)||1; showStep(currentStep);
+  return true;
+ }catch(e){console.warn('No se pudo restaurar el estado',e);clearState();return false;}
+}
 
 function status(t){const el=$('#status'); if(el) el.textContent=t}
-function showStep(n){for(let i=1;i<=4;i++){const el=$('#step'+i);if(el)el.classList.toggle('hidden',i!==n)}document.querySelectorAll('.progressStep').forEach(x=>x.classList.toggle('active',+x.dataset.step===n));window.scrollTo({top:0,behavior:'smooth'});}
+function showStep(n){currentStep=n;for(let i=1;i<=4;i++){const el=$('#step'+i);if(el)el.classList.toggle('hidden',i!==n)}document.querySelectorAll('.progressStep').forEach(x=>x.classList.toggle('active',+x.dataset.step===n));window.scrollTo({top:0,behavior:'smooth'});saveState();}
 function updateKeyUI(){}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
@@ -110,6 +156,7 @@ async function geocodeCandidate(p,placeName,origin,maxKm){
 }
 
 $('#place').addEventListener('input',e=>{
+ if(currentStep===1)clearState();
  chosenPlace=null; clearTimeout(suggestTimer);
  suggestTimer=setTimeout(()=>autocomplete(e.target.value),350);
 });
@@ -124,14 +171,14 @@ function render(){
  document.querySelectorAll('.check').forEach(c=>c.onchange=e=>{const i=+e.target.dataset.i;e.target.checked?selected.add(i):selected.delete(i);render()});
 }
 
-document.querySelectorAll('#visitMode .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#visitMode .chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');visitMode=b.dataset.visitmode});
-document.querySelectorAll('#visitAmount .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#visitAmount .chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');visitAmount=b.dataset.amount});
+document.querySelectorAll('#visitMode .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#visitMode .chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');visitMode=b.dataset.visitmode;saveState()});
+document.querySelectorAll('#visitAmount .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#visitAmount .chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');visitAmount=b.dataset.amount;saveState()});
 
 $('#nextToPrefs').onclick=async()=>{
  const q=$('#place').value.trim(); if(!q){alert('⚠️ Escribe un pueblo o ciudad');return}
  try{const g=chosenPlace||await geocode(q);chosenPlace=g; chatHistory=[]; chatPlaces=[]; const cm=$('#chatMessages'); if(cm)cm.innerHTML='<div class="chatMsg ai">👋 Ya sé cuál es tu destino base. Dime qué lugares quieres visitar o qué tipo de sitios buscas. Puedes hablarme con normalidad.</div>'; $('#useChatPlaces')?.classList.add('hidden'); $('#place').value=g.display_name; $('#selectedDestination').textContent='📍 '+(g.display_name||q); showStep(2)}catch(e){alert('⚠️ '+(e.message||'No puedo localizar ese lugar'))}
 };
-$('#backToPlace').onclick=()=>showStep(1);
+$('#backToPlace').onclick=()=>{clearState();pois=[];selected.clear();optimized=[];chosenPlace=null;$('#place').value='';$('#routeList').innerHTML='';$('#routeActions').classList.add('hidden');showStep(1)};
 $('#discover').onclick=async()=>{
  const q=$('#place').value.trim(); if(!q){status('⚠️ Escribe un pueblo o ciudad');return}
  const btn=$('#discover'); btn.disabled=true; $('#suggestions').classList.add('hidden');
@@ -162,23 +209,23 @@ $('#discover').onclick=async()=>{
    if(!pois.length) throw new Error('No he encontrado suficientes lugares de interés cerca de ahí. Prueba con otra sugerencia.');
    selected.clear(); pois.slice(0,Math.min(6,pois.length)).forEach((_,i)=>selected.add(i));
    $('#resultsTitle').textContent='Qué ver en '+(g.display_name.split(',')[0]||q);
-   render(); showStep(3);
+   render(); showStep(3); saveState();
    status('✨ He encontrado '+pois.length+' lugares reales cerca de '+(g.display_name.split(',')[0]||q)+'.');
  }catch(e){console.error(e);status('⚠️ '+(e.message||'Error de conexión. Inténtalo de nuevo.'))}
  finally{btn.disabled=false}
 };
 
-$('#selectTop').onclick=()=>{selected.clear();pois.slice(0,6).forEach((_,i)=>selected.add(i));render()};
+$('#selectTop').onclick=()=>{selected.clear();pois.slice(0,6).forEach((_,i)=>selected.add(i));render();saveState()};
 $('#continue').onclick=()=>{
  // Hereda el desplazamiento elegido en la búsqueda automática.
  // Así no obligamos al usuario a elegirlo dos veces ni volvemos siempre a coche.
  mode = visitMode || mode;
  document.querySelectorAll('#modes .chip').forEach(b=>b.classList.toggle('active', b.dataset.mode===mode));
- showStep(4);
+ showStep(4); saveState();
 };
 $('#backToPrefs').onclick=()=>showStep(2);
-document.querySelectorAll('#modes .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#modes .chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');mode=b.dataset.mode});
-document.querySelectorAll('input[name=start]').forEach(r=>r.onchange=()=>$('#customStart').classList.toggle('hidden',$('input[name=start]:checked').value!=='custom'));
+document.querySelectorAll('#modes .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#modes .chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');mode=b.dataset.mode;saveState()});
+document.querySelectorAll('input[name=start]').forEach(r=>r.onchange=()=>{$('#customStart').classList.toggle('hidden',$('input[name=start]:checked').value!=='custom');saveState()});
 $('#optimize').onclick=async()=>{
  let route=[...selected].map(i=>pois[i]), start=$('input[name=start]:checked').value;
  const returnToStart=$('#returnToStart').checked;
@@ -187,7 +234,7 @@ $('#optimize').onclick=async()=>{
  else{optimized=nearest(route,route[0]);optimized.startType='first';optimized.startPoint={lat:optimized[0].lat,lon:optimized[0].lon,name:optimized[0].name}}
  optimized.returnToStart=returnToStart;
  const returnItem=returnToStart?`<div class="routeItem routeReturn"><div class="num">↩</div><div><b>Volver al punto de inicio</b><div class="meta">${esc(optimized.startPoint.name)}</div></div></div>`:'';
- $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> A = 1, B = 2, C = 3…</div>'+optimized.map((p,i)=>{const letter=String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${i+1}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)} · Maps: ${letter}</div></div></div>`}).join('')+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
+ $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> A = 1, B = 2, C = 3…</div>'+optimized.map((p,i)=>{const letter=String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${i+1}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)} · Maps: ${letter}</div></div></div>`}).join('')+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});saveState();
 };
 function nearest(items,start){let left=[...items],out=[],cur=start;while(left.length){left.sort((a,b)=>distance(cur,a)-distance(cur,b));cur=left.shift();out.push(cur)}return out}
 // Enviamos nombre + coordenadas: intentamos conservar la etiqueta legible sin perder la posición verificada.
@@ -199,28 +246,40 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 // v22: selector Auto / Manual y conversación con IA
 let plannerMode='auto', chatHistory=[], chatPlaces=[];
 function addChat(role,text){const d=document.createElement('div');d.className='chatMsg '+(role==='user'?'user':'ai');d.textContent=(role==='user'?'👤 ':'🤖 ')+text;$('#chatMessages').appendChild(d);$('#chatMessages').scrollTop=$('#chatMessages').scrollHeight}
-function setPlanner(m){plannerMode=m;document.querySelectorAll('.plannerCard').forEach(x=>x.classList.toggle('active',x.dataset.planner===m));$('#autoPanel').classList.toggle('hidden',m!=='auto');$('#manualPanel').classList.toggle('hidden',m!=='manual');status('')}
+function setPlanner(m){plannerMode=m;document.querySelectorAll('.plannerCard').forEach(x=>x.classList.toggle('active',x.dataset.planner===m));$('#autoPanel').classList.toggle('hidden',m!=='auto');$('#manualPanel').classList.toggle('hidden',m!=='manual');status('');saveState()}
 document.querySelectorAll('.plannerCard').forEach(b=>b.onclick=()=>setPlanner(b.dataset.planner));
-async function sendChat(){const text=$('#chatText').value.trim();if(!text||!chosenPlace)return;const btn=$('#sendChat');btn.disabled=true;$('#chatText').value='';addChat('user',text);try{status('🧠 La IA está preparando tu lista…');const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({destination:chosenPlace.display_name||$('#place').value,lat:+chosenPlace.lat,lon:+chosenPlace.lon,history:chatHistory,message:text})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));addChat('ai',d.reply||'He actualizado la propuesta.');chatHistory.push({role:'user',text},{role:'assistant',text:d.reply||''});chatPlaces=Array.isArray(d.places)?d.places:[];if(chatPlaces.length){$('#useChatPlaces').classList.remove('hidden');status('📍 Propuesta actual: '+chatPlaces.length+' lugares con coordenadas.')}else status('Sigue concretando qué quieres visitar.')}catch(e){addChat('ai','⚠️ '+(e.message||'No he podido responder ahora.'));status('')}finally{btn.disabled=false}}
-$('#sendChat').onclick=sendChat;
-$('#chatText').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});
-$('#useChatPlaces').onclick=async()=>{
- if(!chatPlaces.length)return;
- const btn=$('#useChatPlaces'); btn.disabled=true;
+async function sendChat(){
+ const text=$('#chatText').value.trim(); if(!text||!chosenPlace)return;
+ const btn=$('#sendChat'); btn.disabled=true; $('#chatText').value=''; addChat('user',text);
  try{
+  status('🧠 La IA está preparando tu lista…');
+  const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({destination:chosenPlace.display_name||$('#place').value,lat:+chosenPlace.lat,lon:+chosenPlace.lon,history:chatHistory,message:text})});
+  const d=await r.json().catch(()=>({})); if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
+  addChat('ai',d.reply||'He actualizado la propuesta.');
+  chatHistory.push({role:'user',text},{role:'assistant',text:d.reply||''});
+  chatPlaces=Array.isArray(d.places)?d.places:[]; saveState();
+  if(!chatPlaces.length){status('Sigue concretando qué quieres visitar.');return;}
+
+  // El manual usa EXACTAMENTE la misma verificación y la misma pantalla de resultados que el automático.
   status('📍 Verificando en el mapa la ubicación real de cada lugar…');
-  const g=chosenPlace, seen=new Set(), verified=[];
-  const maxKm=maxDistanceForMovement(visitMode);
+  const g=chosenPlace, seen=new Set(), verified=[], maxKm=maxDistanceForMovement(visitMode);
   for(const p of chatPlaces){
-   const key=p.name.toLowerCase().trim(); if(!p.name||seen.has(key)) continue; seen.add(key);
+   const key=String(p.name||'').toLowerCase().trim(); if(!key||seen.has(key))continue; seen.add(key);
    const x=await geocodeCandidate(p,g.display_name||$('#place').value,{lat:+g.lat,lon:+g.lon},maxKm);
-   if(x) verified.push(x);
+   if(x)verified.push(x);
   }
   pois=verified.map(p=>({...p,km:distance({lat:+g.lat,lon:+g.lon},{lat:+p.lat,lon:+p.lon})}));
-  if(!pois.length) throw new Error('No he podido verificar en el mapa los lugares propuestos.');
-  selected.clear();pois.forEach((_,i)=>selected.add(i));
+  if(!pois.length)throw new Error('No he podido verificar en el mapa los lugares propuestos.');
+  selected.clear(); pois.forEach((_,i)=>selected.add(i));
   $('#resultsTitle').textContent='Tu selección para '+(g.display_name.split(',')[0]||$('#place').value);
-  render();showStep(3);status('');
- }catch(e){status('⚠️ '+(e.message||'No se pudieron verificar los lugares.'))}
+  render(); showStep(3); status('✨ He encontrado '+pois.length+' lugares reales. Puedes desmarcar los que no quieras.'); saveState();
+ }catch(e){addChat('ai','⚠️ '+(e.message||'No he podido completar la búsqueda.'));status('⚠️ '+(e.message||'No se pudieron verificar los lugares.'))}
  finally{btn.disabled=false}
-};
+}
+$('#sendChat').onclick=sendChat;
+$('#chatText').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});
+// Restauración persistente: si Android mata el proceso mientras Google Maps está abierto,
+// al volver Ruteo reconstruye la pantalla y la ruta desde localStorage.
+window.addEventListener('beforeunload',saveState);
+window.addEventListener('pagehide',saveState);
+restoreState();
