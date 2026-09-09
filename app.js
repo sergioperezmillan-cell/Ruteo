@@ -2,8 +2,8 @@ const $=s=>document.querySelector(s);
 const STATE_KEY='ruteoStateV33';
 function resetRuteo(){
   try{localStorage.removeItem(STATE_KEY);}catch(e){}
-  sessionStorage.clear();
-  window.location.reload();
+  try{sessionStorage.clear();}catch(e){}
+  window.location.replace(window.location.pathname+'?newRoute=1');
 }
 
 let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential', aiProvider='', aiModel='';
@@ -142,29 +142,22 @@ async function geocodeCandidate(p,placeName,origin,maxKm,osmPoint=null){
  const short=shortPlaceName(placeName);
  const queries=[`${p.name}, ${placeName}`,`${p.name}, ${short}`,p.name];
  let candidates=[];
- const target=Number.isFinite(osmPoint?.lat)&&Number.isFinite(osmPoint?.lon)?osmPoint:null;
  for(const q of queries){
   try{
    const found=await geoCandidates(q,8);
    candidates.push(...found.map(g=>({...g,query:q})));
-   const valid=found.map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon}),osmKm:target?distance(target,{lat:+g.lat,lon:+g.lon}):Infinity}))
-    .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm);
-   // Con coordenadas OSM disponibles, primero buscamos una coincidencia cercana a
-   // ese elemento. Esto evita que un homónimo más cercano al centro gane.
-   const nearOsm=target?valid.filter(g=>g.osmKm<=1.5).sort((a,b)=>a.osmKm-b.osmKm):[];
-   if(nearOsm.length){const g=nearOsm[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
-   // Si no hay coincidencia cercana a OSM, la coincidencia contextual más cercana al destino.
-   const byOrigin=valid.sort((a,b)=>a.km-b.km);
-   if(byOrigin.length && !target){const g=byOrigin[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
+   const valid=found.map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
+    .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm)
+    .sort((a,b)=>a.km-b.km);
+   if(valid.length){const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
   }catch(e){}
  }
  const seen=new Set();
  const valid=candidates.filter(g=>{const k=`${g.lat.toFixed(5)},${g.lon.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;})
-  .map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon}),osmKm:target?distance(target,{lat:+g.lat,lon:+g.lon}):Infinity}))
-  .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm);
- const nearOsm=target?valid.filter(g=>g.osmKm<=1.5).sort((a,b)=>a.osmKm-b.osmKm):[];
- if(nearOsm.length){const g=nearOsm[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
- if(valid.length&&!target){valid.sort((a,b)=>a.km-b.km);const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
+  .map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
+  .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm)
+  .sort((a,b)=>a.km-b.km);
+ if(valid.length){const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
  return null;
 }
 
@@ -218,10 +211,9 @@ $('#discover').onclick=async()=>{
      let x=null;
      try{x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm,{lat:plat,lon:plon});}catch(e){}
      if(x){ located.push(x); continue; }
-     if(Number.isFinite(plat)&&Number.isFinite(plon)){
-       const km=distance({lat:+g.lat,lon:+g.lon},{lat:plat,lon:plon});
-       if(km<=maxKm) located.push({...p,lat:plat,lon:plon,verified:'osm',km});
-     }
+     // Si no podemos verificar una ubicación con el buscador geográfico, no usamos
+     // las coordenadas OSM como destino final: es preferible omitir ese punto que
+     // mandar al usuario a una ubicación incorrecta.
    }
    const seen=new Set();
    let ranked=located.filter(p=>{let k=p.name.toLowerCase().trim();if(seen.has(k))return false;seen.add(k);return true})
@@ -277,7 +269,7 @@ $('#maps').onclick=()=>{if(!optimized.length)return;const mapPoint=p=>`${p.lat},
 $('#back').onclick=()=>showStep(3);
 setAI(aiProvider,aiModel);
 updateKeyUI();
-$('#resetApp')?.addEventListener('click',()=>{if(confirm('¿Borrar la ruta y empezar desde el principio?'))resetRuteo();});
+$('#resetApp')?.addEventListener('click',resetRuteo);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 
 // v22: selector Auto / Manual y conversación con IA
