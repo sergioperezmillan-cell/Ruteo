@@ -64,11 +64,46 @@ async function callGemini(key,payload,previousAttempts=[]){
  }
  return {ok:false,...last};
 }
+
+async function callOverpass(lat,lon,radius){
+ const q=`[out:json][timeout:18];(
+ nwr(around:${radius},${lat},${lon})[name][tourism];
+ nwr(around:${radius},${lat},${lon})[name][historic];
+ nwr(around:${radius},${lat},${lon})[name][amenity=place_of_worship];
+ nwr(around:${radius},${lat},${lon})[name][building~"^(church|chapel|cathedral)$"];
+ nwr(around:${radius},${lat},${lon})[name][leisure~"^(park|garden)$"];
+ nwr(around:${radius},${lat},${lon})[name][memorial];
+ nwr(around:${radius},${lat},${lon})[name][man_made~"^(monument|tower|bridge|watermill|windmill)$"];
+ nwr(around:${radius},${lat},${lon})[name][place=square];
+ );out center tags;`;
+ const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+ let lastErr='';
+ for(const url of endpoints){
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),20000);
+  try{
+   const r=await fetch(url,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q),signal:controller.signal});
+   const d=await r.json().catch(()=>null);
+   if(!r.ok||!d?.elements) { lastErr='HTTP '+r.status; continue; }
+   const seen=new Set();
+   const candidates=d.elements.map(e=>{
+    const t=e.tags||{}; const lat2=Number(e.lat??e.center?.lat),lon2=Number(e.lon??e.center?.lon);
+    return {name:String(t.name||'').trim(),type:String(t.tourism||t.historic||t.amenity||t.building||t.leisure||t.man_made||t.place||'lugar de interés'),lat:lat2,lon:lon2,osmType:e.type,id:e.id};
+   }).filter(x=>x.name&&Number.isFinite(x.lat)&&Number.isFinite(x.lon)).filter(x=>{const k=x.name.toLowerCase();if(seen.has(k))return false;seen.add(k);return true});
+   return candidates;
+  }catch(e){lastErr=e?.name==='AbortError'?'timeout':(e?.message||'fetch error');}
+  finally{clearTimeout(timer)}
+ }
+ return [];
+}
+
+function distanceKm(lat1,lon1,lat2,lon2){const R=6371,rad=x=>x*Math.PI/180,dLat=rad(lat2-lat1),dLon=rad(lon2-lon1),a=Math.sin(dLat/2)**2+Math.cos(rad(lat1))*Math.cos(rad(lat2))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(a))}
+
 function parsePlaces(text){
  text=String(text||'').trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/\s*```$/,'');
- let a;try{a=JSON.parse(text)}catch(e){const i=text.indexOf('['),j=text.lastIndexOf(']');if(i<0||j<i)throw new Error('La IA no devolvió JSON válido');a=JSON.parse(text.slice(i,j+1))}
+ let a;try{a=JSON.parse(text)}catch(e){const i=text.indexOf('{'),j=text.lastIndexOf('}');if(i<0||j<i)throw new Error('La IA no devolvió JSON válido');a=JSON.parse(text.slice(i,j+1))}
+ const arr=Array.isArray(a)?a:(Array.isArray(a?.places)?a.places:[]);
  const seen=new Set();
- return (Array.isArray(a)?a:[]).map((x,i)=>({name:String(x?.name||'').trim(),type:String(x?.type||'lugar de interés').trim(),description:String(x?.description||'').trim(),score:Number(x?.score)||100-i*5,lat:Number(x?.lat),lon:Number(x?.lon)})).filter(x=>x.name&&!seen.has(x.name.toLowerCase())&&(seen.add(x.name.toLowerCase()),true)).slice(0,15);
+ return arr.map((x,i)=>({name:String(x?.name||'').trim(),type:String(x?.type||'lugar de interés').trim(),description:String(x?.description||'').trim(),score:Number(x?.score)||100-i*5,lat:Number(x?.lat),lon:Number(x?.lon)})).filter(x=>x.name&&!seen.has(x.name.toLowerCase())&&(seen.add(x.name.toLowerCase()),true)).slice(0,15);
 }
 module.exports=async (req,res)=>{
  if(req.method!=='POST')return res.status(405).json({error:'Usa POST'});
@@ -77,16 +112,26 @@ module.exports=async (req,res)=>{
  const lat=Number(b.lat),lon=Number(b.lon),prefs=b.preferences||{};
  if(!name)return res.status(400).json({error:'Falta el lugar'});
  const movement=prefs.movement==='driving'?'EN COCHE':(prefs.movement==='bicycling'?'EN BICICLETA':'ANDANDO');
- const amount=prefs.amount==='complete'?'VISITA COMPLETA (búsqueda amplia y exhaustiva de lugares de interés; el usuario elegirá cuáles visitar)':'SOLO LO IMPRESCINDIBLE (selección corta y muy buena)';
+ const amount=prefs.amount==='complete'?'VISITA COMPLETA (búsqueda amplia de candidatos reales; el usuario elegirá cuáles visitar)':'SOLO LO IMPRESCINDIBLE (selección corta y muy buena)';
  const notes=String(prefs.notes||'').trim();
+ const radius=prefs.amount==='complete'?8000:5000;
+ let osmCandidates=[];
+ try{osmCandidates=await callOverpass(lat,lon,radius)}catch(e){osmCandidates=[]}
+ osmCandidates.sort((a,b)=>distanceKm(lat,lon,a.lat,a.lon)-distanceKm(lat,lon,b.lat,b.lon));
+ osmCandidates=osmCandidates.slice(0,60);
+ const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name} | ${x.type} | ${x.lat.toFixed(6)},${x.lon.toFixed(6)}`).join('\n'):'(No se pudo obtener la lista OSM; usa tu conocimiento como respaldo, pero no inventes lugares.)';
  const prompt=`Eres un experto guía turístico local. Debes preparar una selección para una persona que va a VISITAR ${context}.
 CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
 PREFERENCIAS: se moverá ${movement}; quiere ${amount}; petición libre: ${notes||'ninguna'}.
-Prioriza SIEMPRE lugares cercanos al centro exacto. Si pide pueblos cercanos o una distancia concreta, respétala. Evita recomendar homónimos o lugares lejanos. En VISITA COMPLETA NO reduzcas la lista por ir andando: primero descubre los lugares de interés razonablemente cercanos y deja que el usuario elija; después la aplicación se encargará de la ruta.
-Prioriza calidad turística real. No inventes ni incluyas servicios, tiendas, farmacias, restaurantes, hoteles o parkings. En VISITA COMPLETA busca deliberadamente variedad: monumentos, patrimonio histórico, iglesias, ermitas, catedrales, castillos o fortalezas, edificios y arquitectura singulares, museos y espacios culturales, plazas y cascos históricos, miradores, puentes, fuentes, jardines, parques, elementos naturales y otros lugares que tengan interés turístico real. Incluye también lugares menos famosos pero razonablemente interesantes si están cerca y pueden merecer una visita. No te limites a repetir los 4-6 lugares imprescindibles.
-MUY IMPORTANTE: usa el nombre exacto y específico por el que se localiza el punto en un mapa (incluye monumento/edificio concreto y localidad cuando ayude). La aplicación verificará las coordenadas posteriormente con un geocodificador real.
-Devuelve aproximadamente ${prefs.amount==='complete'?'12 a 15':'4 a 6'} resultados. En VISITA COMPLETA intenta llegar a 15 cuando existan suficientes lugares reales y diferentes que merezcan la pena; es preferible ofrecer candidatos adicionales para que el usuario pueda elegir que omitir lugares razonablemente interesantes. JSON EXCLUSIVO:
-[{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":100,"lat":43.123456,"lon":-1.234567}]`;
+A continuación tienes CANDIDATOS REALES EXTRAÍDOS DE OPENSTREETMAP cerca del centro. Son la fuente principal para descubrir lugares que quizá no conozcas de memoria:
+${osmText}
+Tu trabajo es valorar esos candidatos y devolver los mejores. Puedes descartar candidatos que sean claramente irrelevantes para un visitante, pero NO descartes automáticamente lugares menos famosos: si tienen interés histórico, cultural, arquitectónico, religioso, paisajístico o turístico razonable, consérvalos como opcionales. No inventes candidatos que no estén en la lista OSM salvo que sea imprescindible y estés muy seguro de que existen.
+Prioriza calidad turística real. NO incluyas restaurantes, hoteles, tiendas, farmacias, parkings u otros servicios en places aunque aparezcan en los candidatos. EXCEPCIÓN: si la petición libre solicita expresamente un restaurante, comida, café, aparcamiento u otro servicio, indícalo en la respuesta aparte en "extras", no dentro de places.
+En VISITA COMPLETA busca deliberadamente variedad: monumentos, patrimonio histórico, iglesias, ermitas, catedrales, castillos o fortalezas, edificios y arquitectura singulares, museos y espacios culturales, plazas y cascos históricos, miradores, puentes, fuentes, jardines, parques, elementos naturales y otros lugares con interés turístico real.
+ORDEN Y RELEVANCIA: ordena places de mayor a menor interés para un visitante. Asigna score de 0 a 100: 90-100 = imprescindible o muy destacado; 75-89 = muy recomendable; 60-74 = interesante; 40-59 = curiosidad/solo si sobra tiempo. La aplicación mostrará este nivel al usuario para ayudarle a seleccionar manualmente. La puntuación debe reflejar principalmente interés turístico, no solo proximidad.
+Mantén las coordenadas del candidato OSM elegido. Usa su nombre exacto y específico. En VISITA COMPLETA intenta llegar a 15 cuando existan suficientes candidatos razonables; en imprescindible devuelve 4-6.
+JSON EXCLUSIVO:
+{"places":[{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":95,"lat":43.123456,"lon":-1.234567}],"extras":[]}`;
  try{
   let g=await callQwen(prompt);
   if(g.ok){
