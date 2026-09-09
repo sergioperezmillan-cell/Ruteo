@@ -5,7 +5,6 @@ function resetRuteo(){
   try{sessionStorage.clear();}catch(e){}
   window.location.replace(window.location.pathname+'?newRoute=1');
 }
-
 let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential', aiProvider='', aiModel='';
 let currentStep=1;
 
@@ -138,7 +137,7 @@ function maxDistanceForMovement(m){
 }
 // La IA propone el nombre. Nosotros buscamos VARIAS coincidencias y elegimos la más cercana
 // al destino base, siempre dentro de un radio de seguridad según el medio de transporte.
-async function geocodeCandidate(p,placeName,origin,maxKm,osmPoint=null){
+async function geocodeCandidate(p,placeName,origin,maxKm){
  const short=shortPlaceName(placeName);
  const queries=[`${p.name}, ${placeName}`,`${p.name}, ${short}`,p.name];
  let candidates=[];
@@ -149,9 +148,11 @@ async function geocodeCandidate(p,placeName,origin,maxKm,osmPoint=null){
    const valid=found.map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
     .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm)
     .sort((a,b)=>a.km-b.km);
+   // Si la búsqueda contextual ya devuelve candidatos válidos, no hace falta abrir más la búsqueda.
    if(valid.length){const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
   }catch(e){}
  }
+ // Última oportunidad: entre TODAS las coincidencias obtenidas, gana siempre la más cercana.
  const seen=new Set();
  const valid=candidates.filter(g=>{const k=`${g.lat.toFixed(5)},${g.lon.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;})
   .map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
@@ -201,19 +202,16 @@ $('#discover').onclick=async()=>{
    status('📍 Localizando los sitios recomendados…');
    const located=[];
    const maxKm=maxDistanceForMovement(visitMode);
-   // v38: las coordenadas OSM sirven como referencia, pero NO como coordenadas
-   // finales de navegación. Volvemos a verificar cada lugar por nombre/contexto,
-   // como funcionaba en v31. Si existe una coincidencia fiable, usamos esa posición.
-   // Solo usamos las coordenadas OSM como último respaldo cuando la búsqueda no
-   // encuentra ninguna coincidencia razonable.
+   // Verificamos TODOS los puntos, incluso si Gemini ha dado coordenadas.
+   // Así un cambio de modelo no puede desplazar la ruta por coordenadas inventadas.
    for(const p of raw.slice(0,15)){
      const plat=Number(p.lat), plon=Number(p.lon);
-     let x=null;
-     try{x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm,{lat:plat,lon:plon});}catch(e){}
-     if(x){ located.push(x); continue; }
-     // Si no podemos verificar una ubicación con el buscador geográfico, no usamos
-     // las coordenadas OSM como destino final: es preferible omitir ese punto que
-     // mandar al usuario a una ubicación incorrecta.
+     if(Number.isFinite(plat)&&Number.isFinite(plon)){
+       const km=distance({lat:+g.lat,lon:+g.lon},{lat:plat,lon:plon});
+       if(km<=maxKm){ located.push({...p,lat:plat,lon:plon,verified:true,km}); continue; }
+     }
+     const x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm);
+     if(x) located.push(x);
    }
    const seen=new Set();
    let ranked=located.filter(p=>{let k=p.name.toLowerCase().trim();if(seen.has(k))return false;seen.add(k);return true})
@@ -254,7 +252,6 @@ $('#optimize').onclick=async()=>{
  const returnItem=returnToStart?`<div class="routeItem routeReturn"><div class="num">↩</div><div><b>Volver al punto de inicio</b><div class="meta">${esc(optimized.startPoint.name)}</div></div></div>`:'';
  const startKind=optimized.startType||start;
  // Numeración de Ruteo: el punto 0 nunca lleva letra; el punto 1 es A, el 2 B, etc.
- // Esto es independiente de cómo Google Maps etiquete internamente el origen.
  const originRow=(startKind==='first')?'':`<div class="routeItem"><div class="num">0</div><div><b>${esc(optimized.startPoint?.name||'Punto de inicio')}</b><div class="meta">Punto de inicio</div></div></div>`;
  const routeRows=optimized.map((p,i)=>{
    const n=i+(startKind==='first'?0:1);
