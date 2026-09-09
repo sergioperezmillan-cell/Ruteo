@@ -66,36 +66,41 @@ async function callGemini(key,payload,previousAttempts=[]){
 }
 
 async function callOverpass(lat,lon,radius){
- const q=`[out:json][timeout:18];(
+ const q=`[out:json][timeout:25];(
  nwr(around:${radius},${lat},${lon})[name][tourism];
  nwr(around:${radius},${lat},${lon})[name][historic];
+ nwr(around:${radius},${lat},${lon})[name][heritage];
  nwr(around:${radius},${lat},${lon})[name][amenity=place_of_worship];
- nwr(around:${radius},${lat},${lon})[name][building~"^(church|chapel|cathedral)$"];
- nwr(around:${radius},${lat},${lon})[name][leisure~"^(park|garden)$"];
+ nwr(around:${radius},${lat},${lon})[name][amenity~"^(arts_centre|theatre|museum|library|fountain)$"];
+ nwr(around:${radius},${lat},${lon})[name][building~"^(church|chapel|cathedral|castle|fort|palace|manor|townhall|monastery|convent|synagogue|mosque)$"];
+ nwr(around:${radius},${lat},${lon})[name][leisure~"^(park|garden|nature_reserve|recreation_ground)$"];
  nwr(around:${radius},${lat},${lon})[name][memorial];
- nwr(around:${radius},${lat},${lon})[name][man_made~"^(monument|tower|bridge|watermill|windmill)$"];
+ nwr(around:${radius},${lat},${lon})[name][man_made~"^(monument|tower|bridge|watermill|windmill|obelisk)$"];
  nwr(around:${radius},${lat},${lon})[name][place=square];
+ nwr(around:${radius},${lat},${lon})[name][natural~"^(peak|hill|rock|cave_entrance|waterfall|spring|wood|scrub)$"];
+ nwr(around:${radius},${lat},${lon})[name][waterway~"^(waterfall|weir|dam)$"];
+ nwr(around:${radius},${lat},${lon})[name][information~"^(board|guidepost)$"];
  );out center tags;`;
  const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
- let lastErr='';
  for(const url of endpoints){
-  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),20000);
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),28000);
   try{
    const r=await fetch(url,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q),signal:controller.signal});
    const d=await r.json().catch(()=>null);
-   if(!r.ok||!d?.elements) { lastErr='HTTP '+r.status; continue; }
+   if(!r.ok||!d?.elements) continue;
    const seen=new Set();
-   const candidates=d.elements.map(e=>{
+   return d.elements.map(e=>{
     const t=e.tags||{}; const lat2=Number(e.lat??e.center?.lat),lon2=Number(e.lon??e.center?.lon);
-    return {name:String(t.name||'').trim(),type:String(t.tourism||t.historic||t.amenity||t.building||t.leisure||t.man_made||t.place||'lugar de interés'),lat:lat2,lon:lon2,osmType:e.type,id:e.id};
-   }).filter(x=>x.name&&Number.isFinite(x.lat)&&Number.isFinite(x.lon)).filter(x=>{const k=x.name.toLowerCase();if(seen.has(k))return false;seen.add(k);return true});
-   return candidates;
-  }catch(e){lastErr=e?.name==='AbortError'?'timeout':(e?.message||'fetch error');}
+    const type=String(t.tourism||t.historic||t.heritage||t.amenity||t.building||t.leisure||t.memorial||t.man_made||t.place||t.natural||t.waterway||t.information||'lugar de interés');
+    return {name:String(t.name||'').trim(),type,lat:lat2,lon:lon2,osmType:e.type,id:e.id};
+   }).filter(x=>x.name&&Number.isFinite(x.lat)&&Number.isFinite(x.lon)).filter(x=>{
+    const k=x.name.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true;
+   });
+  }catch(e){}
   finally{clearTimeout(timer)}
  }
  return [];
 }
-
 function distanceKm(lat1,lon1,lat2,lon2){const R=6371,rad=x=>x*Math.PI/180,dLat=rad(lat2-lat1),dLon=rad(lon2-lon1),a=Math.sin(dLat/2)**2+Math.cos(rad(lat1))*Math.cos(rad(lat2))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(a))}
 
 function parsePlaces(text){
@@ -114,11 +119,11 @@ module.exports=async (req,res)=>{
  const movement=prefs.movement==='driving'?'EN COCHE':(prefs.movement==='bicycling'?'EN BICICLETA':'ANDANDO');
  const amount=prefs.amount==='complete'?'VISITA COMPLETA (búsqueda amplia de candidatos reales; el usuario elegirá cuáles visitar)':'SOLO LO IMPRESCINDIBLE (selección corta y muy buena)';
  const notes=String(prefs.notes||'').trim();
- const radius=prefs.amount==='complete'?8000:5000;
+ const radius=prefs.amount==='complete'?15000:7000;
  let osmCandidates=[];
  try{osmCandidates=await callOverpass(lat,lon,radius)}catch(e){osmCandidates=[]}
  osmCandidates.sort((a,b)=>distanceKm(lat,lon,a.lat,a.lon)-distanceKm(lat,lon,b.lat,b.lon));
- osmCandidates=osmCandidates.slice(0,60);
+ osmCandidates=osmCandidates.slice(0,100);
  const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name} | ${x.type} | ${x.lat.toFixed(6)},${x.lon.toFixed(6)}`).join('\n'):'(No se pudo obtener la lista OSM; usa tu conocimiento como respaldo, pero no inventes lugares.)';
  const prompt=`Eres un experto guía turístico local. Debes preparar una selección para una persona que va a VISITAR ${context}.
 CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
