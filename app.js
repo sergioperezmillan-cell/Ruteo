@@ -168,7 +168,7 @@ document.addEventListener('click',e=>{if(!e.target.closest('.searchWrap'))$('#su
 function distance(a,b){const R=6371,rad=x=>x*Math.PI/180,dLat=rad(b.lat-a.lat),dLon=rad(b.lon-a.lon),x=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
 
 function render(){
- $('#results').innerHTML=pois.map((p,i)=>`<label class="card ${selected.has(i)?'selected':''}"><input class="check" type="checkbox" data-i="${i}" ${selected.has(i)?'checked':''}><div><div class="cardTitle">${esc(p.name)}</div><div class="meta">${esc(p.type)} · 📍 ${p.km.toFixed(1)} km del centro</div></div></label>`).join('');
+ $('#results').innerHTML=pois.map((p,i)=>`<label class="card ${selected.has(i)?'selected':''}"><input class="check" type="checkbox" data-i="${i}" ${selected.has(i)?'checked':''}><div><div class="cardTitle">${esc(p.name)}</div><div class="meta">${esc(p.type)} · 📍 ${p.km.toFixed(1)} km del centro</div><div class="relevance">${Number(p.score)>=90?'⭐ Muy recomendable':Number(p.score)>=75?'👍 Recomendable':Number(p.score)>=60?'🔹 Interesante':'▫️ Opcional'}</div></div></label>`).join('');
  $('#continue').disabled=!selected.size;
  document.querySelectorAll('.check').forEach(c=>c.onchange=e=>{const i=+e.target.dataset.i;e.target.checked?selected.add(i):selected.delete(i);render()});
 }
@@ -199,7 +199,7 @@ $('#discover').onclick=async()=>{
    const maxKm=maxDistanceForMovement(visitMode);
    // Verificamos TODOS los puntos, incluso si Gemini ha dado coordenadas.
    // Así un cambio de modelo no puede desplazar la ruta por coordenadas inventadas.
-   for(const p of raw.slice(0,12)){
+   for(const p of raw.slice(0,15)){
    const x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm);
      if(x) located.push(x);
    }
@@ -209,7 +209,7 @@ $('#discover').onclick=async()=>{
     .sort((a,b)=>(b.score-a.score)||(a.km-b.km));
    // Seguridad final: jamás aceptamos un POI fuera del radio máximo del medio elegido.
    ranked=ranked.filter(p=>p.km<=maxKm);
-   pois=ranked.slice(0,12);
+   pois=ranked.slice(0,15);
    if(!pois.length) throw new Error('No he encontrado suficientes lugares de interés cerca de ahí. Prueba con otra sugerencia.');
    selected.clear(); pois.slice(0,Math.min(6,pois.length)).forEach((_,i)=>selected.add(i));
    $('#resultsTitle').textContent='Qué ver en '+(g.display_name.split(',')[0]||q);
