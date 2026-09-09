@@ -77,15 +77,15 @@ module.exports=async (req,res)=>{
  const lat=Number(b.lat),lon=Number(b.lon),prefs=b.preferences||{};
  if(!name)return res.status(400).json({error:'Falta el lugar'});
  const movement=prefs.movement==='driving'?'EN COCHE':(prefs.movement==='bicycling'?'EN BICICLETA':'ANDANDO');
- const amount=prefs.amount==='complete'?'VISITA COMPLETA (puedes proponer más lugares interesantes)':'SOLO LO IMPRESCINDIBLE (selección corta y muy buena)';
+ const amount=prefs.amount==='complete'?'VISITA COMPLETA (búsqueda amplia y exhaustiva de lugares de interés; el usuario elegirá cuáles visitar)':'SOLO LO IMPRESCINDIBLE (selección corta y muy buena)';
  const notes=String(prefs.notes||'').trim();
  const prompt=`Eres un experto guía turístico local. Debes preparar una selección para una persona que va a VISITAR ${context}.
 CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
 PREFERENCIAS: se moverá ${movement}; quiere ${amount}; petición libre: ${notes||'ninguna'}.
-Prioriza SIEMPRE lugares cercanos al centro exacto. Andando mantén una selección compacta; en bici permite algo más; en coche puedes ampliar. Si pide pueblos cercanos o una distancia concreta, respétala. Evita recomendar homónimos o lugares lejanos.
-Prioriza calidad turística real. No inventes ni incluyas servicios, tiendas, farmacias, restaurantes, hoteles o parkings.
+Prioriza SIEMPRE lugares cercanos al centro exacto. Si pide pueblos cercanos o una distancia concreta, respétala. Evita recomendar homónimos o lugares lejanos. En VISITA COMPLETA NO reduzcas la lista por ir andando: primero descubre los lugares de interés razonablemente cercanos y deja que el usuario elija; después la aplicación se encargará de la ruta.
+Prioriza calidad turística real. No inventes ni incluyas servicios, tiendas, farmacias, restaurantes, hoteles o parkings. En VISITA COMPLETA busca deliberadamente variedad: monumentos, patrimonio histórico, iglesias, ermitas, catedrales, castillos o fortalezas, edificios y arquitectura singulares, museos y espacios culturales, plazas y cascos históricos, miradores, puentes, fuentes, jardines, parques, elementos naturales y otros lugares que tengan interés turístico real. Incluye también lugares menos famosos pero razonablemente interesantes si están cerca y pueden merecer una visita. No te limites a repetir los 4-6 lugares imprescindibles.
 MUY IMPORTANTE: usa el nombre exacto y específico por el que se localiza el punto en un mapa (incluye monumento/edificio concreto y localidad cuando ayude). La aplicación verificará las coordenadas posteriormente con un geocodificador real.
-Devuelve aproximadamente ${prefs.amount==='complete'?'6 a 12':'4 a 6'} resultados. JSON EXCLUSIVO:
+Devuelve aproximadamente ${prefs.amount==='complete'?'12 a 15':'4 a 6'} resultados. En VISITA COMPLETA intenta llegar a 15 cuando existan suficientes lugares reales y diferentes que merezcan la pena; es preferible ofrecer candidatos adicionales para que el usuario pueda elegir que omitir lugares razonablemente interesantes. JSON EXCLUSIVO:
 [{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":100,"lat":43.123456,"lon":-1.234567}]`;
  try{
   let g=await callQwen(prompt);
