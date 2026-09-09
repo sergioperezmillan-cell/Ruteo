@@ -189,9 +189,11 @@ $('#discover').onclick=async()=>{
    const g=chosenPlace||await geocode(q);
    status('🔎 Buscando lugares de interés reales…');
    const placeContext=shortPlaceName(g.display_name||q); const fullContext=g.display_name||q;
-   status('🧠 La IA está investigando qué merece la pena ver en '+placeContext+'…');
+   status('🤖 Qwen está buscando qué merece la pena ver en '+placeContext+'…');
+   const qwenWatch=setTimeout(()=>status('⏳ Qwen sigue trabajando… si no responde, Ruteo pasará automáticamente a Gemini.'),12000);
    const preferences={movement:visitMode,amount:visitAmount,notes:$('#visitNotes').value.trim()};
    const ai=await discoverPlaces(g.lat,g.lon,placeContext,fullContext,preferences);
+   clearTimeout(qwenWatch);
    setAI(ai.source,ai.model);
    const raw=ai.places;
    status('📍 Localizando los sitios recomendados…');
