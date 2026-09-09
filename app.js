@@ -1,18 +1,19 @@
 const $=s=>document.querySelector(s);
-const STATE_KEY='ruteoStateV32';
-let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential';
+const STATE_KEY='ruteoStateV33';
+let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential', aiProvider='', aiModel='';
 let currentStep=1;
 
 function saveState(){
  try{
   const state={
-   version:32,currentStep,pois,selected:[...selected],mode,visitMode,visitAmount,
+   version:33,currentStep,pois,selected:[...selected],mode,visitMode,visitAmount,
    chosenPlace,plannerMode,chatHistory,chatPlaces,
    place:$('#place')?.value||'',visitNotes:$('#visitNotes')?.value||'',
    customStart:$('#customStart')?.value||'',start:$('input[name=start]:checked')?.value||'first',
    returnToStart:!!$('#returnToStart')?.checked,
    optimizedItems:Array.isArray(optimized)?optimized:[],
    optimizedMeta:Array.isArray(optimized)?{startType:optimized.startType||'first',startPoint:optimized.startPoint||null,returnToStart:!!optimized.returnToStart}:null,
+   aiProvider,aiModel,
    routeList:$('#routeList')?.innerHTML||'',routeActionsVisible:!$('#routeActions')?.classList.contains('hidden')
   };
   localStorage.setItem(STATE_KEY,JSON.stringify(state));
@@ -22,9 +23,9 @@ function clearState(){try{localStorage.removeItem(STATE_KEY)}catch(e){}}
 function restoreState(){
  try{
   const raw=localStorage.getItem(STATE_KEY); if(!raw)return false;
-  const st=JSON.parse(raw); if(!st||st.version!==32)return false;
+  const st=JSON.parse(raw); if(!st||st.version!==33)return false;
   pois=Array.isArray(st.pois)?st.pois:[]; selected=new Set(Array.isArray(st.selected)?st.selected:[]);
-  mode=st.mode||'driving'; visitMode=st.visitMode||'walking'; visitAmount=st.visitAmount||'essential';
+  mode=st.mode||'driving'; visitMode=st.visitMode||'walking'; visitAmount=st.visitAmount||'essential'; aiProvider=st.aiProvider||''; aiModel=st.aiModel||'';
   chosenPlace=st.chosenPlace||null; plannerMode=st.plannerMode||'auto'; chatHistory=Array.isArray(st.chatHistory)?st.chatHistory:[]; chatPlaces=Array.isArray(st.chatPlaces)?st.chatPlaces:[];
   optimized=Array.isArray(st.optimizedItems)?st.optimizedItems:[];
   if(st.optimizedMeta){optimized.startType=st.optimizedMeta.startType||'first';optimized.startPoint=st.optimizedMeta.startPoint||null;optimized.returnToStart=!!st.optimizedMeta.returnToStart;}
@@ -48,6 +49,7 @@ function restoreState(){
 }
 
 function status(t){const el=$('#status'); if(el) el.textContent=t}
+function setAI(provider,model){aiProvider=provider||'';aiModel=model||'';const el=$('#aiEngine'); if(el) el.textContent=aiProvider&&aiModel?`IA: ${aiProvider} · ${aiModel}`:'IA: —';saveState();}
 function showStep(n){currentStep=n;for(let i=1;i<=4;i++){const el=$('#step'+i);if(el)el.classList.toggle('hidden',i!==n)}document.querySelectorAll('.progressStep').forEach(x=>x.classList.toggle('active',+x.dataset.step===n));window.scrollTo({top:0,behavior:'smooth'});saveState();}
 function updateKeyUI(){}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -113,7 +115,7 @@ async function autocomplete(q){
 
 // Descubrimiento v11: el navegador ya no consulta directamente bases externas de POIs.
 // La consulta se hace en una Netlify Function del mismo sitio, evitando bloqueos CORS.
-async function discoverPlaces(lat,lon,placeName,contextName,preferences={}){const r=await fetch('/api/discover',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lat,lon,name:placeName,context:contextName||placeName,preferences})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));if(!Array.isArray(d.places)||!d.places.length)throw new Error(d.error||'La IA no ha devuelto lugares para ese sitio.');return d.places;}
+async function discoverPlaces(lat,lon,placeName,contextName,preferences={}){const r=await fetch('/api/discover',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lat,lon,name:placeName,context:contextName||placeName,preferences})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));if(!Array.isArray(d.places)||!d.places.length)throw new Error(d.error||'La IA no ha devuelto lugares para ese sitio.');return d;}
 // Nunca usamos las coordenadas devueltas por la IA como fuente de navegación.
 // La IA decide QUÉ visitar; Nominatim/Photon verifican DÓNDE está cada lugar.
 async function geoCandidates(q,limit=8){
@@ -189,7 +191,9 @@ $('#discover').onclick=async()=>{
    const placeContext=shortPlaceName(g.display_name||q); const fullContext=g.display_name||q;
    status('🧠 La IA está investigando qué merece la pena ver en '+placeContext+'…');
    const preferences={movement:visitMode,amount:visitAmount,notes:$('#visitNotes').value.trim()};
-   const raw=await discoverPlaces(g.lat,g.lon,placeContext,fullContext,preferences);
+   const ai=await discoverPlaces(g.lat,g.lon,placeContext,fullContext,preferences);
+   setAI(ai.source,ai.model);
+   const raw=ai.places;
    status('📍 Localizando los sitios recomendados…');
    const located=[];
    const maxKm=maxDistanceForMovement(visitMode);
@@ -209,13 +213,15 @@ $('#discover').onclick=async()=>{
    if(!pois.length) throw new Error('No he encontrado suficientes lugares de interés cerca de ahí. Prueba con otra sugerencia.');
    selected.clear(); pois.slice(0,Math.min(6,pois.length)).forEach((_,i)=>selected.add(i));
    $('#resultsTitle').textContent='Qué ver en '+(g.display_name.split(',')[0]||q);
+   $('#resultsMode').textContent=visitAmount==='complete'?'Visita completa · puedes desmarcar los que no quieras':'Selección imprescindible · puedes desmarcar los que no quieras';
+   $('#selectTop').textContent=visitAmount==='complete'?'⭐ Seleccionar imprescindibles':'⭐ Imprescindibles';
    render(); showStep(3); saveState();
    status('✨ He encontrado '+pois.length+' lugares reales cerca de '+(g.display_name.split(',')[0]||q)+'.');
  }catch(e){console.error(e);status('⚠️ '+(e.message||'Error de conexión. Inténtalo de nuevo.'))}
  finally{btn.disabled=false}
 };
 
-$('#selectTop').onclick=()=>{selected.clear();pois.slice(0,6).forEach((_,i)=>selected.add(i));render();saveState()};
+$('#selectTop').onclick=()=>{selected.clear();const n=plannerMode==='manual'?pois.length:Math.min(6,pois.length);pois.slice(0,n).forEach((_,i)=>selected.add(i));render();saveState()};
 $('#continue').onclick=()=>{
  // Hereda el desplazamiento elegido en la búsqueda automática.
  // Así no obligamos al usuario a elegirlo dos veces ni volvemos siempre a coche.
@@ -234,12 +240,16 @@ $('#optimize').onclick=async()=>{
  else{optimized=nearest(route,route[0]);optimized.startType='first';optimized.startPoint={lat:optimized[0].lat,lon:optimized[0].lon,name:optimized[0].name}}
  optimized.returnToStart=returnToStart;
  const returnItem=returnToStart?`<div class="routeItem routeReturn"><div class="num">↩</div><div><b>Volver al punto de inicio</b><div class="meta">${esc(optimized.startPoint.name)}</div></div></div>`:'';
- $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> A = 1, B = 2, C = 3…</div>'+optimized.map((p,i)=>{const letter=String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${i+1}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)} · Maps: ${letter}</div></div></div>`}).join('')+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});saveState();
+ const startKind=optimized.startType||start;
+ const originRow=(startKind==='first')?'':`<div class="routeItem"><div class="num">0</div><div><b>${esc(optimized.startPoint?.name||'Punto de inicio')}</b><div class="meta">Punto de inicio · sin letra en Maps</div></div></div>`;
+ const routeRows=optimized.map((p,i)=>{const n=startKind==='first'?i:i+1;const letter=startKind==='first'?(i===0?'':String.fromCharCode(65+i-1)):String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${n}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)}${letter?` · Maps: ${letter}`:' · Punto de inicio'}</div></div></div>`}).join('');
+ $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> punto 0 = origen · 1 = A · 2 = B · 3 = C…</div>'+originRow+routeRows+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});saveState();
 };
 function nearest(items,start){let left=[...items],out=[],cur=start;while(left.length){left.sort((a,b)=>distance(cur,a)-distance(cur,b));cur=left.shift();out.push(cur)}return out}
 // Enviamos nombre + coordenadas: intentamos conservar la etiqueta legible sin perder la posición verificada.
 $('#maps').onclick=()=>{if(!optimized.length)return;const mapPoint=p=>`${p.lat},${p.lon}`, pts=optimized.map(mapPoint), start=$('input[name=start]:checked').value, circular=!!optimized.returnToStart;let origin,destination,wp;if(start==='current'){origin='My Location';destination=circular?'My Location':pts[pts.length-1];wp=circular?pts:pts.slice(0,-1)}else if(start==='custom'){origin=`${optimized.startPoint?.name} (${optimized.startPoint?.lat},${optimized.startPoint?.lon})`;destination=circular?origin:pts[pts.length-1];wp=circular?pts:pts.slice(0,-1)}else{origin=pts[0];destination=circular?origin:pts[pts.length-1];wp=circular?pts.slice(1):pts.slice(1,-1)}let url='https://www.google.com/maps/dir/?api=1&travelmode='+mode+'&origin='+encodeURIComponent(origin)+'&destination='+encodeURIComponent(destination);if(wp.length)url+='&waypoints='+encodeURIComponent(wp.join('|'));window.open(url,'_blank')};
 $('#back').onclick=()=>showStep(3);
+setAI(aiProvider,aiModel);
 updateKeyUI();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 
@@ -255,6 +265,7 @@ async function sendChat(){
   status('🧠 La IA está preparando tu lista…');
   const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({destination:chosenPlace.display_name||$('#place').value,lat:+chosenPlace.lat,lon:+chosenPlace.lon,history:chatHistory,message:text})});
   const d=await r.json().catch(()=>({})); if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
+  setAI(d.source,d.model);
   addChat('ai',d.reply||'He actualizado la propuesta.');
   chatHistory.push({role:'user',text},{role:'assistant',text:d.reply||''});
   chatPlaces=Array.isArray(d.places)?d.places:[]; saveState();
@@ -272,6 +283,8 @@ async function sendChat(){
   if(!pois.length)throw new Error('No he podido verificar en el mapa los lugares propuestos.');
   selected.clear(); pois.forEach((_,i)=>selected.add(i));
   $('#resultsTitle').textContent='Tu selección para '+(g.display_name.split(',')[0]||$('#place').value);
+  $('#resultsMode').textContent='Selección manual · puedes desmarcar los que no quieras';
+  $('#selectTop').textContent='⭐ Seleccionar todos';
   render(); showStep(3); status('✨ He encontrado '+pois.length+' lugares reales. Puedes desmarcar los que no quieras.'); saveState();
  }catch(e){addChat('ai','⚠️ '+(e.message||'No he podido completar la búsqueda.'));status('⚠️ '+(e.message||'No se pudieron verificar los lugares.'))}
  finally{btn.disabled=false}
