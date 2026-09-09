@@ -1,5 +1,11 @@
 const $=s=>document.querySelector(s);
 const STATE_KEY='ruteoStateV33';
+function resetRuteo(){
+  try{localStorage.removeItem(STATE_KEY);}catch(e){}
+  sessionStorage.clear();
+  window.location.reload();
+}
+
 let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential', aiProvider='', aiModel='';
 let currentStep=1;
 
@@ -255,9 +261,15 @@ $('#optimize').onclick=async()=>{
  optimized.returnToStart=returnToStart;
  const returnItem=returnToStart?`<div class="routeItem routeReturn"><div class="num">↩</div><div><b>Volver al punto de inicio</b><div class="meta">${esc(optimized.startPoint.name)}</div></div></div>`:'';
  const startKind=optimized.startType||start;
- const originRow=(startKind==='first')?'':`<div class="routeItem"><div class="num">0</div><div><b>${esc(optimized.startPoint?.name||'Punto de inicio')}</b><div class="meta">Punto de inicio · sin letra en Maps</div></div></div>`;
- const routeRows=optimized.map((p,i)=>{const n=startKind==='first'?i:i+1;const letter=startKind==='first'?(i===0?'':String.fromCharCode(65+i-1)):String.fromCharCode(65+i);return `<div class="routeItem"><div class="num">${n}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)}${letter?` · Maps: ${letter}`:' · Punto de inicio'}</div></div></div>`}).join('');
- $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Equivalencia Google Maps:</b> punto 0 = origen · 1 = A · 2 = B · 3 = C…</div>'+originRow+routeRows+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});saveState();
+ // Numeración de Ruteo: el punto 0 nunca lleva letra; el punto 1 es A, el 2 B, etc.
+ // Esto es independiente de cómo Google Maps etiquete internamente el origen.
+ const originRow=(startKind==='first')?'':`<div class="routeItem"><div class="num">0</div><div><b>${esc(optimized.startPoint?.name||'Punto de inicio')}</b><div class="meta">Punto de inicio</div></div></div>`;
+ const routeRows=optimized.map((p,i)=>{
+   const n=i+(startKind==='first'?0:1);
+   const letter=n===0?'':String.fromCharCode(64+n);
+   return `<div class="routeItem"><div class="num">${n}</div><div><b>${esc(p.name)}</b><div class="meta">${esc(p.type)}${letter?` · Maps: ${letter}`:''}</div></div></div>`;
+ }).join('');
+ $('#routeList').innerHTML='<h3>Tu recorrido'+(returnToStart?' · circular':'')+'</h3><div class="mapsLegend">🗺️ <b>Ruteo:</b> 0 = inicio · 1 = A · 2 = B · 3 = C…</div>'+originRow+routeRows+returnItem; $('#routeActions').classList.remove('hidden');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});saveState();
 };
 function nearest(items,start){let left=[...items],out=[],cur=start;while(left.length){left.sort((a,b)=>distance(cur,a)-distance(cur,b));cur=left.shift();out.push(cur)}return out}
 // Enviamos nombre + coordenadas: intentamos conservar la etiqueta legible sin perder la posición verificada.
@@ -265,6 +277,7 @@ $('#maps').onclick=()=>{if(!optimized.length)return;const mapPoint=p=>`${p.lat},
 $('#back').onclick=()=>showStep(3);
 setAI(aiProvider,aiModel);
 updateKeyUI();
+$('#resetApp')?.addEventListener('click',()=>{if(confirm('¿Borrar la ruta y empezar desde el principio?'))resetRuteo();});
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
 
 // v22: selector Auto / Manual y conversación con IA
