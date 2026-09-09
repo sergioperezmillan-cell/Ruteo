@@ -200,7 +200,12 @@ $('#discover').onclick=async()=>{
    // Verificamos TODOS los puntos, incluso si Gemini ha dado coordenadas.
    // Así un cambio de modelo no puede desplazar la ruta por coordenadas inventadas.
    for(const p of raw.slice(0,15)){
-   const x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm);
+     const plat=Number(p.lat), plon=Number(p.lon);
+     if(Number.isFinite(plat)&&Number.isFinite(plon)){
+       const km=distance({lat:+g.lat,lon:+g.lon},{lat:plat,lon:plon});
+       if(km<=maxKm){ located.push({...p,lat:plat,lon:plon,verified:true,km}); continue; }
+     }
+     const x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm);
      if(x) located.push(x);
    }
    const seen=new Set();
