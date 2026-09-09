@@ -132,28 +132,33 @@ function maxDistanceForMovement(m){
 }
 // La IA propone el nombre. Nosotros buscamos VARIAS coincidencias y elegimos la más cercana
 // al destino base, siempre dentro de un radio de seguridad según el medio de transporte.
-async function geocodeCandidate(p,placeName,origin,maxKm){
+async function geocodeCandidate(p,placeName,origin,maxKm,osmPoint=null){
  const short=shortPlaceName(placeName);
  const queries=[`${p.name}, ${placeName}`,`${p.name}, ${short}`,p.name];
  let candidates=[];
+ const target=Number.isFinite(osmPoint?.lat)&&Number.isFinite(osmPoint?.lon)?osmPoint:null;
  for(const q of queries){
   try{
    const found=await geoCandidates(q,8);
    candidates.push(...found.map(g=>({...g,query:q})));
-   const valid=found.map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
-    .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm)
-    .sort((a,b)=>a.km-b.km);
-   // Si la búsqueda contextual ya devuelve candidatos válidos, no hace falta abrir más la búsqueda.
-   if(valid.length){const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
+   const valid=found.map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon}),osmKm:target?distance(target,{lat:+g.lat,lon:+g.lon}):Infinity}))
+    .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm);
+   // Con coordenadas OSM disponibles, primero buscamos una coincidencia cercana a
+   // ese elemento. Esto evita que un homónimo más cercano al centro gane.
+   const nearOsm=target?valid.filter(g=>g.osmKm<=1.5).sort((a,b)=>a.osmKm-b.osmKm):[];
+   if(nearOsm.length){const g=nearOsm[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
+   // Si no hay coincidencia cercana a OSM, la coincidencia contextual más cercana al destino.
+   const byOrigin=valid.sort((a,b)=>a.km-b.km);
+   if(byOrigin.length && !target){const g=byOrigin[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
   }catch(e){}
  }
- // Última oportunidad: entre TODAS las coincidencias obtenidas, gana siempre la más cercana.
  const seen=new Set();
  const valid=candidates.filter(g=>{const k=`${g.lat.toFixed(5)},${g.lon.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;})
-  .map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon})}))
-  .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm)
-  .sort((a,b)=>a.km-b.km);
- if(valid.length){const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
+  .map(g=>({...g,km:distance(origin,{lat:+g.lat,lon:+g.lon}),osmKm:target?distance(target,{lat:+g.lat,lon:+g.lon}):Infinity}))
+  .filter(g=>Number.isFinite(g.km)&&g.km<=maxKm);
+ const nearOsm=target?valid.filter(g=>g.osmKm<=1.5).sort((a,b)=>a.osmKm-b.osmKm):[];
+ if(nearOsm.length){const g=nearOsm[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
+ if(valid.length&&!target){valid.sort((a,b)=>a.km-b.km);const g=valid[0];return {...p,lat:+g.lat,lon:+g.lon,verified:true,km:g.km};}
  return null;
 }
 
@@ -197,16 +202,20 @@ $('#discover').onclick=async()=>{
    status('📍 Localizando los sitios recomendados…');
    const located=[];
    const maxKm=maxDistanceForMovement(visitMode);
-   // Verificamos TODOS los puntos, incluso si Gemini ha dado coordenadas.
-   // Así un cambio de modelo no puede desplazar la ruta por coordenadas inventadas.
+   // v38: las coordenadas OSM sirven como referencia, pero NO como coordenadas
+   // finales de navegación. Volvemos a verificar cada lugar por nombre/contexto,
+   // como funcionaba en v31. Si existe una coincidencia fiable, usamos esa posición.
+   // Solo usamos las coordenadas OSM como último respaldo cuando la búsqueda no
+   // encuentra ninguna coincidencia razonable.
    for(const p of raw.slice(0,15)){
      const plat=Number(p.lat), plon=Number(p.lon);
+     let x=null;
+     try{x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm,{lat:plat,lon:plon});}catch(e){}
+     if(x){ located.push(x); continue; }
      if(Number.isFinite(plat)&&Number.isFinite(plon)){
        const km=distance({lat:+g.lat,lon:+g.lon},{lat:plat,lon:plon});
-       if(km<=maxKm){ located.push({...p,lat:plat,lon:plon,verified:true,km}); continue; }
+       if(km<=maxKm) located.push({...p,lat:plat,lon:plon,verified:'osm',km});
      }
-     const x=await geocodeCandidate(p,g.display_name||q,{lat:+g.lat,lon:+g.lon},maxKm);
-     if(x) located.push(x);
    }
    const seen=new Set();
    let ranked=located.filter(p=>{let k=p.name.toLowerCase().trim();if(seen.has(k))return false;seen.add(k);return true})
