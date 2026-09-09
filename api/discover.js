@@ -124,17 +124,17 @@ module.exports=async (req,res)=>{
  try{osmCandidates=await callOverpass(lat,lon,radius)}catch(e){osmCandidates=[]}
  osmCandidates.sort((a,b)=>distanceKm(lat,lon,a.lat,a.lon)-distanceKm(lat,lon,b.lat,b.lon));
  osmCandidates=osmCandidates.slice(0,100);
- const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name} | ${x.type} | ${x.lat.toFixed(6)},${x.lon.toFixed(6)}`).join('\n'):'(No se pudo obtener la lista OSM; usa tu conocimiento como respaldo, pero no inventes lugares.)';
+ const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name} | ${x.type}`).join('\n'):'(No se pudo obtener la lista OSM; usa tu conocimiento como respaldo, pero no inventes lugares.)';
  const prompt=`Eres un experto guía turístico local. Debes preparar una selección para una persona que va a VISITAR ${context}.
 CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
 PREFERENCIAS: se moverá ${movement}; quiere ${amount}; petición libre: ${notes||'ninguna'}.
-A continuación tienes CANDIDATOS REALES EXTRAÍDOS DE OPENSTREETMAP cerca del centro. Son la fuente principal para descubrir lugares que quizá no conozcas de memoria:
+A continuación tienes CANDIDATOS REALES EXTRAÍDOS DE OPENSTREETMAP cerca del centro. Son solo una fuente de SUGERENCIAS para descubrir lugares que quizá no conozcas de memoria. NO uses ni intentes conservar coordenadas de OSM, porque la aplicación localizará después cada lugar como en la versión v34:
 ${osmText}
 Tu trabajo es valorar esos candidatos y devolver los mejores. Puedes descartar candidatos que sean claramente irrelevantes para un visitante, pero NO descartes automáticamente lugares menos famosos: si tienen interés histórico, cultural, arquitectónico, religioso, paisajístico o turístico razonable, consérvalos como opcionales. No inventes candidatos que no estén en la lista OSM salvo que sea imprescindible y estés muy seguro de que existen.
 Prioriza calidad turística real. NO incluyas restaurantes, hoteles, tiendas, farmacias, parkings u otros servicios en places aunque aparezcan en los candidatos. EXCEPCIÓN: si la petición libre solicita expresamente un restaurante, comida, café, aparcamiento u otro servicio, indícalo en la respuesta aparte en "extras", no dentro de places.
 En VISITA COMPLETA busca deliberadamente variedad: monumentos, patrimonio histórico, iglesias, ermitas, catedrales, castillos o fortalezas, edificios y arquitectura singulares, museos y espacios culturales, plazas y cascos históricos, miradores, puentes, fuentes, jardines, parques, elementos naturales y otros lugares con interés turístico real.
 ORDEN Y RELEVANCIA: ordena places de mayor a menor interés para un visitante. Asigna score de 0 a 100: 90-100 = imprescindible o muy destacado; 75-89 = muy recomendable; 60-74 = interesante; 40-59 = curiosidad/solo si sobra tiempo. La aplicación mostrará este nivel al usuario para ayudarle a seleccionar manualmente. La puntuación debe reflejar principalmente interés turístico, no solo proximidad.
-Mantén las coordenadas del candidato OSM elegido. Usa su nombre exacto y específico. En VISITA COMPLETA intenta llegar a 15 cuando existan suficientes candidatos razonables; en imprescindible devuelve 4-6.
+Para cada lugar elegido, proporciona el nombre exacto y específico con el que se pueda localizar en un mapa y proporciona también sus coordenadas aproximadas basadas en tu conocimiento del lugar. La aplicación NO usará las coordenadas OSM: después localizará cada lugar mediante su nombre + localidad, igual que en v34, y escogerá la coincidencia correcta más cercana al destino. En VISITA COMPLETA intenta llegar a 15 cuando existan suficientes candidatos razonables; en imprescindible devuelve 4-6.
 JSON EXCLUSIVO:
 {"places":[{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":95,"lat":43.123456,"lon":-1.234567}],"extras":[]}`;
  try{
