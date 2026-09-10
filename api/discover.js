@@ -66,7 +66,7 @@ async function callGemini(key,payload,previousAttempts=[]){
 }
 
 async function callOverpass(lat,lon,radius){
- const q=`[out:json][timeout:25];(
+ const q=`[out:json][timeout:30];(
  nwr(around:${radius},${lat},${lon})[name][tourism];
  nwr(around:${radius},${lat},${lon})[name][historic];
  nwr(around:${radius},${lat},${lon})[name][heritage];
@@ -83,7 +83,7 @@ async function callOverpass(lat,lon,radius){
  );out center tags;`;
  const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
  for(const url of endpoints){
-  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),28000);
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),30000);
   try{
    const r=await fetch(url,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q),signal:controller.signal});
    const d=await r.json().catch(()=>null);
@@ -92,7 +92,15 @@ async function callOverpass(lat,lon,radius){
    return d.elements.map(e=>{
     const t=e.tags||{}; const lat2=Number(e.lat??e.center?.lat),lon2=Number(e.lon??e.center?.lon);
     const type=String(t.tourism||t.historic||t.heritage||t.amenity||t.building||t.leisure||t.memorial||t.man_made||t.place||t.natural||t.waterway||t.information||'lugar de interés');
-    return {name:String(t.name||'').trim(),type,lat:lat2,lon:lon2,osmType:e.type,id:e.id};
+    return {
+      name:String(t.name||t['name:fr']||t['name:es']||'').trim(),
+      name_fr:String(t['name:fr']||'').trim(),
+      name_es:String(t['name:es']||'').trim(),
+      type, lat:lat2, lon:lon2,
+      description:String(t.description||t['description:fr']||t['description:es']||'').trim(),
+      website:String(t.website||t['contact:website']||'').trim(),
+      osmType:e.type,id:e.id
+    };
    }).filter(x=>x.name&&Number.isFinite(x.lat)&&Number.isFinite(x.lon)).filter(x=>{
     const k=x.name.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true;
    });
@@ -120,7 +128,7 @@ module.exports=async (req,res)=>{
  const complete=prefs.amount==='complete';
  const amount=complete?'VISITA COMPLETA':'SOLO LO IMPRESCINDIBLE';
  const notes=String(prefs.notes||'').trim();
- const radius=complete?15000:7000;
+ const radius=complete?20000:8000;
 
  // 1) PRIMERA BÚSQUEDA: Qwen trabaja por su cuenta, sin una lista cerrada de OSM.
  const firstPrompt=`Eres un experto guía turístico local. Prepara una selección realista para una persona que va a VISITAR ${context}.
@@ -140,7 +148,7 @@ JSON EXCLUSIVO:
  try{osmCandidates=await callOverpass(lat,lon,radius)}catch(e){osmCandidates=[]}
  osmCandidates.sort((a,b)=>distanceKm(lat,lon,a.lat,a.lon)-distanceKm(lat,lon,b.lat,b.lon));
  osmCandidates=osmCandidates.slice(0,100);
- const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name} | ${x.type}`).join('\n'):'(No se pudo obtener la lista OSM. Continúa con tu propio conocimiento.)';
+ const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name}${x.name_fr&&x.name_fr!==x.name?' | FR: '+x.name_fr:''}${x.name_es&&x.name_es!==x.name?' | ES: '+x.name_es:''} | ${x.type}${x.description?' | descripción: '+x.description:''}${x.website?' | web: '+x.website:''} | coordenadas OSM: ${x.lat}, ${x.lon}`).join('\n'):'(No se pudo obtener la lista OSM. Continúa con tu propio conocimiento.)';
 
  try{
   let first=await callQwen(firstPrompt);
@@ -151,18 +159,21 @@ JSON EXCLUSIVO:
   // Si Qwen no responde en la primera fase, usamos Gemini como respaldo para mantener el flujo.
   if(!initial.length){
    const key=String(process.env.GEMINI_API_KEY||'').trim();
-   if(!key)return res.status(502).json({error:first.missing?'Falta configurar QWEN_API_KEY en Vercel':'Qwen no devolvió una selección inicial y no hay GEMINI_API_KEY configurada',attempts});
-   const gg=await callGemini(key,{contents:[{parts:[{text:firstPrompt}]}],generationConfig:{temperature:0.1,responseMimeType:'application/json'}},attempts);
-   attempts=gg.attempts||attempts;
-   if(!gg.ok)return res.status(gg.status>=500?502:gg.status).json({error:gg.data?.error?.message||('Gemini HTTP '+gg.status),attempts});
-   initial=parsePlaces(extractText(gg.data));
-   first={...gg,provider:'Gemini'};
+   if(key){
+    const gg=await callGemini(key,{contents:[{parts:[{text:firstPrompt}]}],generationConfig:{temperature:0.1,responseMimeType:'application/json'}},attempts);
+    attempts=gg.attempts||attempts;
+    if(gg.ok){
+     initial=parsePlaces(extractText(gg.data));
+     first={...gg,provider:'Gemini'};
+    }
+   }
   }
-  if(!initial.length)return res.status(502).json({error:'La IA no devolvió lugares utilizables en la primera búsqueda',attempts});
+  // Si Qwen/Gemini no encuentran nada, NO abortamos: OSM puede rescatar el destino.
+  // En ese caso la segunda llamada de Qwen trabaja sobre los candidatos externos y puede construir la lista.
 
   // 3) SEGUNDA BÚSQUEDA: Qwen recibe los candidatos externos + su propia lista.
   // No es una whitelist: OSM solo sirve para descubrir posibles lugares adicionales.
-  const initialText=initial.map((x,i)=>`${i+1}. ${x.name} | ${x.type} | coordenadas aprox. ${Number.isFinite(x.lat)?x.lat:'?'}, ${Number.isFinite(x.lon)?x.lon:'?'}`).join('\n');
+  const initialText=initial.length?initial.map((x,i)=>`${i+1}. ${x.name} | ${x.type} | coordenadas aprox. ${Number.isFinite(x.lat)?x.lat:'?'}, ${Number.isFinite(x.lon)?x.lon:'?'}`).join('\n'):'(La primera búsqueda de IA no devolvió lugares utilizables; usa tu conocimiento del destino y los candidatos OSM como apoyo.)';
   const mergePrompt=`Eres el mismo experto guía turístico local. Estamos preparando ${amount} para ${context}.
 CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
 PREFERENCIAS: ${movement}; petición libre: ${notes||'ninguna'}.
@@ -174,7 +185,7 @@ CANDIDATOS EXTERNOS OSM: esta segunda lista NO es una lista cerrada ni una white
 ${osmText}
 
 Ahora haz una SEGUNDA REVISIÓN:
-1. Conserva los lugares buenos de la PRIMERA LISTA.
+1. Conserva los lugares buenos de la PRIMERA LISTA. Si está vacía, realiza tú mismo la selección a partir de tu conocimiento del destino y de los candidatos OSM.
 2. Revisa los candidatos OSM y añade únicamente lugares reales que tengan interés turístico y que no estén ya representados en la primera lista.
 3. Si un candidato OSM es el mismo lugar que uno de la primera lista aunque tenga otro nombre, NO lo añadas como duplicado: conserva el de la primera lista.
 4. NO omitas un monumento importante, catedral, iglesia, castillo, museo, casco histórico u otro lugar emblemático solo porque no aparezca en OSM. Tu conocimiento sigue siendo válido.
@@ -196,7 +207,8 @@ JSON EXCLUSIVO:
   // Si la segunda fase falla, conservamos la primera: nunca dejamos una buena búsqueda sin resultado.
   if(!finalPlaces.length){
    finalPlaces=initial;
-   return res.status(200).json({places:finalPlaces,source:first.provider||'Qwen',model:first.model||'',attempts,discovery:'qwen+osm',merge:'first-list-fallback'});
+   if(finalPlaces.length) return res.status(200).json({places:finalPlaces,source:first.provider||'Qwen',model:first.model||'',attempts,discovery:'qwen+osm',merge:'first-list-fallback'});
+   return res.status(502).json({error:'Ni la búsqueda IA ni la revisión con OSM devolvieron lugares utilizables',attempts,osmCandidates:osmCandidates.length});
   }
 
   // La segunda fase es un juez, pero la primera lista tiene prioridad: recuperamos cualquier
