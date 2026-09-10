@@ -117,38 +117,102 @@ module.exports=async (req,res)=>{
  const lat=Number(b.lat),lon=Number(b.lon),prefs=b.preferences||{};
  if(!name)return res.status(400).json({error:'Falta el lugar'});
  const movement=prefs.movement==='driving'?'EN COCHE':(prefs.movement==='bicycling'?'EN BICICLETA':'ANDANDO');
- const amount=prefs.amount==='complete'?'VISITA COMPLETA (búsqueda amplia de candidatos reales; el usuario elegirá cuáles visitar)':'SOLO LO IMPRESCINDIBLE (selección corta y muy buena)';
+ const complete=prefs.amount==='complete';
+ const amount=complete?'VISITA COMPLETA':'SOLO LO IMPRESCINDIBLE';
  const notes=String(prefs.notes||'').trim();
- const radius=prefs.amount==='complete'?15000:7000;
+ const radius=complete?15000:7000;
+
+ // 1) PRIMERA BÚSQUEDA: Qwen trabaja por su cuenta, sin una lista cerrada de OSM.
+ const firstPrompt=`Eres un experto guía turístico local. Prepara una selección realista para una persona que va a VISITAR ${context}.
+CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
+PREFERENCIAS: se moverá ${movement}; quiere ${amount}; petición libre: ${notes||'ninguna'}.
+Haz esta primera búsqueda POR TU CUENTA usando tu conocimiento del destino. NO estás limitado por ninguna base de datos externa.
+Si el destino tiene monumentos o lugares emblemáticos claramente conocidos, inclúyelos. Para una VISITA COMPLETA busca deliberadamente variedad: monumentos, patrimonio histórico, iglesias, ermitas, catedrales, castillos o fortalezas, arquitectura singular, museos y espacios culturales, plazas y cascos históricos, miradores, puentes, fuentes, jardines, parques, naturaleza y otros lugares con interés turístico real. Para LO IMPRESCINDIBLE devuelve solo los 4-6 mejores.
+Prioriza calidad turística real y una distancia razonable del centro. No incluyas restaurantes, hoteles, tiendas, farmacias, parkings ni otros servicios salvo que la petición libre los pida expresamente.
+Para cada lugar usa el nombre EXACTO Y ESPECÍFICO que utilizarías para localizarlo en un mapa, incluyendo la localidad cuando ayude. Proporciona también coordenadas aproximadas basadas en tu conocimiento; son una ayuda secundaria y la aplicación las verificará después mediante geocodificación real.
+En VISITA COMPLETA busca una primera lista de aproximadamente 6-10 lugares fuertes y variados. Esta NO es todavía la lista final: habrá una segunda revisión con candidatos externos. No rellenes con lugares inventados.
+Asigna score 0-100 según interés turístico, no solo proximidad.
+JSON EXCLUSIVO:
+{"places":[{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":95,"lat":39.856,"lon":-4.024}],"extras":[]}`;
+
+ // 2) FUENTE EXTERNA: OSM descubre candidatos que Qwen podría haberse dejado.
  let osmCandidates=[];
  try{osmCandidates=await callOverpass(lat,lon,radius)}catch(e){osmCandidates=[]}
  osmCandidates.sort((a,b)=>distanceKm(lat,lon,a.lat,a.lon)-distanceKm(lat,lon,b.lat,b.lon));
  osmCandidates=osmCandidates.slice(0,100);
- const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name} | ${x.type}`).join('\n'):'(No se pudo obtener la lista OSM; usa tu conocimiento como respaldo, pero no inventes lugares.)';
- const prompt=`Eres un experto guía turístico local. Debes preparar una selección para una persona que va a VISITAR ${context}.
-CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
-PREFERENCIAS: se moverá ${movement}; quiere ${amount}; petición libre: ${notes||'ninguna'}.
-A continuación tienes CANDIDATOS REALES EXTRAÍDOS DE OPENSTREETMAP cerca del centro. Son solo una fuente de SUGERENCIAS para descubrir lugares que quizá no conozcas de memoria. NO uses ni intentes conservar coordenadas de OSM, porque la aplicación localizará después cada lugar como en la versión v34:
-${osmText}
-Tu trabajo es valorar esos candidatos y devolver los mejores. Puedes descartar candidatos que sean claramente irrelevantes para un visitante, pero NO descartes automáticamente lugares menos famosos: si tienen interés histórico, cultural, arquitectónico, religioso, paisajístico o turístico razonable, consérvalos como opcionales. No inventes candidatos que no estén en la lista OSM salvo que sea imprescindible y estés muy seguro de que existen.
-Prioriza calidad turística real. NO incluyas restaurantes, hoteles, tiendas, farmacias, parkings u otros servicios en places aunque aparezcan en los candidatos. EXCEPCIÓN: si la petición libre solicita expresamente un restaurante, comida, café, aparcamiento u otro servicio, indícalo en la respuesta aparte en "extras", no dentro de places.
-En VISITA COMPLETA busca deliberadamente variedad: monumentos, patrimonio histórico, iglesias, ermitas, catedrales, castillos o fortalezas, edificios y arquitectura singulares, museos y espacios culturales, plazas y cascos históricos, miradores, puentes, fuentes, jardines, parques, elementos naturales y otros lugares con interés turístico real.
-ORDEN Y RELEVANCIA: ordena places de mayor a menor interés para un visitante. Asigna score de 0 a 100: 90-100 = imprescindible o muy destacado; 75-89 = muy recomendable; 60-74 = interesante; 40-59 = curiosidad/solo si sobra tiempo. La aplicación mostrará este nivel al usuario para ayudarle a seleccionar manualmente. La puntuación debe reflejar principalmente interés turístico, no solo proximidad.
-Para cada lugar elegido, proporciona el nombre exacto y específico con el que se pueda localizar en un mapa y proporciona también sus coordenadas aproximadas basadas en tu conocimiento del lugar. La aplicación NO usará las coordenadas OSM: después localizará cada lugar mediante su nombre + localidad, igual que en v34, y escogerá la coincidencia correcta más cercana al destino. En VISITA COMPLETA intenta llegar a 15 cuando existan suficientes candidatos razonables; en imprescindible devuelve 4-6.
-JSON EXCLUSIVO:
-{"places":[{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":95,"lat":43.123456,"lon":-1.234567}],"extras":[]}`;
+ const osmText=osmCandidates.length?osmCandidates.map((x,i)=>`${i+1}. ${x.name} | ${x.type}`).join('\n'):'(No se pudo obtener la lista OSM. Continúa con tu propio conocimiento.)';
+
  try{
-  let g=await callQwen(prompt);
-  if(g.ok){
-    const places=parsePlaces(extractOpenAIText(g.data));
-    if(places.length)return res.status(200).json({places,source:g.provider,model:g.model,attempts:g.attempts||[]});
+  let first=await callQwen(firstPrompt);
+  let attempts=first.attempts||[];
+  let initial=[];
+  if(first.ok) initial=parsePlaces(extractOpenAIText(first.data));
+
+  // Si Qwen no responde en la primera fase, usamos Gemini como respaldo para mantener el flujo.
+  if(!initial.length){
+   const key=String(process.env.GEMINI_API_KEY||'').trim();
+   if(!key)return res.status(502).json({error:first.missing?'Falta configurar QWEN_API_KEY en Vercel':'Qwen no devolvió una selección inicial y no hay GEMINI_API_KEY configurada',attempts});
+   const gg=await callGemini(key,{contents:[{parts:[{text:firstPrompt}]}],generationConfig:{temperature:0.1,responseMimeType:'application/json'}},attempts);
+   attempts=gg.attempts||attempts;
+   if(!gg.ok)return res.status(gg.status>=500?502:gg.status).json({error:gg.data?.error?.message||('Gemini HTTP '+gg.status),attempts});
+   initial=parsePlaces(extractText(gg.data));
+   first={...gg,provider:'Gemini'};
   }
-  const key=String(process.env.GEMINI_API_KEY||'').trim();
-  if(!key)return res.status(502).json({error:g.missing?'Falta configurar QWEN_API_KEY en Vercel':'Qwen no devolvió lugares utilizables y no hay GEMINI_API_KEY configurada'});
-  g=await callGemini(key,{contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.1,responseMimeType:'application/json'}},g.attempts||[]);
-  if(!g.ok)return res.status(g.status>=500?502:g.status).json({error:g.data?.error?.message||('Gemini HTTP '+g.status),attempts:g.attempts||[]});
-  const places=parsePlaces(extractText(g.data));
-  if(!places.length)return res.status(502).json({error:'La IA respondió, pero no devolvió lugares utilizables',attempts:g.attempts||[]});
-  return res.status(200).json({places,source:g.provider,model:g.model,attempts:g.attempts||[]});
- }catch(e){return res.status(502).json({error:e.message||'No se pudo contactar con Gemini'})}
+  if(!initial.length)return res.status(502).json({error:'La IA no devolvió lugares utilizables en la primera búsqueda',attempts});
+
+  // 3) SEGUNDA BÚSQUEDA: Qwen recibe los candidatos externos + su propia lista.
+  // No es una whitelist: OSM solo sirve para descubrir posibles lugares adicionales.
+  const initialText=initial.map((x,i)=>`${i+1}. ${x.name} | ${x.type} | coordenadas aprox. ${Number.isFinite(x.lat)?x.lat:'?'}, ${Number.isFinite(x.lon)?x.lon:'?'}`).join('\n');
+  const mergePrompt=`Eres el mismo experto guía turístico local. Estamos preparando ${amount} para ${context}.
+CENTRO EXACTO: ${name}, coordenadas ${lat}, ${lon}.
+PREFERENCIAS: ${movement}; petición libre: ${notes||'ninguna'}.
+
+PRIMERA LISTA: estos lugares los encontraste tú en una primera búsqueda independiente. TIENEN PRIORIDAD. Debes conservar sus nombres, coordenadas aproximadas y puntuación cuando sigan siendo adecuados. No sustituyas un lugar de esta lista por otro equivalente solo por aparecer en OSM.
+${initialText}
+
+CANDIDATOS EXTERNOS OSM: esta segunda lista NO es una lista cerrada ni una whitelist. OSM puede estar incompleto, tener nombres distintos o contener lugares poco útiles. Úsala SOLO para detectar lugares reales que quizá falten en tu primera lista.
+${osmText}
+
+Ahora haz una SEGUNDA REVISIÓN:
+1. Conserva los lugares buenos de la PRIMERA LISTA.
+2. Revisa los candidatos OSM y añade únicamente lugares reales que tengan interés turístico y que no estén ya representados en la primera lista.
+3. Si un candidato OSM es el mismo lugar que uno de la primera lista aunque tenga otro nombre, NO lo añadas como duplicado: conserva el de la primera lista.
+4. NO omitas un monumento importante, catedral, iglesia, castillo, museo, casco histórico u otro lugar emblemático solo porque no aparezca en OSM. Tu conocimiento sigue siendo válido.
+5. No inventes lugares ficticios. OSM es solo una ayuda para descubrir, no una garantía de que todo candidato sea interesante.
+6. En VISITA COMPLETA intenta terminar con 12-15 lugares reales y variados. En LO IMPRESCINDIBLE termina con 4-6.
+7. Ordena por interés turístico. Score 90-100 imprescindible/muy destacado; 75-89 muy recomendable; 60-74 interesante; 40-59 curiosidad.
+8. Usa para cada lugar el nombre EXACTO Y ESPECÍFICO que mejor permita encontrarlo en un mapa, incluyendo localidad cuando ayude. Da coordenadas aproximadas como ayuda secundaria. La aplicación verificará después la ubicación por nombre + localidad con geocodificación real.
+9. No incluyas servicios en places salvo petición expresa.
+
+IMPORTANTE: la PRIMERA LISTA tiene prioridad frente a duplicados de OSM.
+JSON EXCLUSIVO:
+{"places":[{"name":"nombre exacto","type":"categoría","description":"por qué merece la pena","score":95,"lat":39.856,"lon":-4.024}],"extras":[]}`;
+
+  let second=await callQwen(mergePrompt);
+  attempts=second.attempts||attempts;
+  let finalPlaces=[];
+  if(second.ok)finalPlaces=parsePlaces(extractOpenAIText(second.data));
+
+  // Si la segunda fase falla, conservamos la primera: nunca dejamos una buena búsqueda sin resultado.
+  if(!finalPlaces.length){
+   finalPlaces=initial;
+   return res.status(200).json({places:finalPlaces,source:first.provider||'Qwen',model:first.model||'',attempts,discovery:'qwen+osm',merge:'first-list-fallback'});
+  }
+
+  // La segunda fase es un juez, pero la primera lista tiene prioridad: recuperamos cualquier
+  // elemento inicial que Qwen haya omitido accidentalmente y evitamos duplicados obvios por nombre.
+  const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+  const sameName=(a,b)=>{const x=norm(a),y=norm(b);return x===y||x.includes(y)||y.includes(x)};
+  const samePlace=(a,b)=>{if(sameName(a.name,b.name))return true; if(Number.isFinite(a.lat)&&Number.isFinite(a.lon)&&Number.isFinite(b.lat)&&Number.isFinite(b.lon)){return distanceKm(a.lat,a.lon,b.lat,b.lon)<=0.5} return false};
+  const merged=[];
+  for(const p of initial){
+   const hit=finalPlaces.find(q=>samePlace(p,q));
+   merged.push(hit?{...hit,name:p.name,type:p.type||hit.type,description:p.description||hit.description,score:p.score,lat:p.lat,lon:p.lon}:p);
+  }
+  for(const p of finalPlaces){
+   if(!merged.some(q=>samePlace(q,p)))merged.push(p);
+  }
+  finalPlaces=merged.slice(0,15);
+  return res.status(200).json({places:finalPlaces,source:second.provider||first.provider||'Qwen',model:second.model||first.model||'',attempts,discovery:'qwen+osm',merge:'first-priority'});
+ }catch(e){return res.status(502).json({error:e.message||'No se pudo completar la búsqueda'});}
 };
