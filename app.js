@@ -1,17 +1,19 @@
 const $=s=>document.querySelector(s);
 const STATE_KEY='ruteoStateV33';
+let resetting=false;
 function resetRuteo(){
-  // Borrado duro: no usamos showStep() aquí porque esa función vuelve a guardar el estado.
+  // IMPORTANTE: beforeunload/pagehide guardan estado. Marcamos el reinicio para que no lo vuelvan a escribir.
+  resetting=true;
   try{localStorage.removeItem(STATE_KEY);}catch(e){}
   try{sessionStorage.clear();}catch(e){}
-  // Recarga completa y URL nueva para impedir que el estado anterior se restaure.
-  const cleanUrl=window.location.origin+window.location.pathname+'?newRoute='+Date.now();
-  window.location.replace(cleanUrl);
+  // Recarga completa y URL nueva.
+  window.location.href=window.location.origin+window.location.pathname+'?newRoute='+Date.now();
 }
 let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential', aiProvider='', aiModel='';
 let currentStep=1;
 
 function saveState(){
+ if(resetting)return;
  try{
   const state={
    version:33,currentStep,pois,selected:[...selected],mode,visitMode,visitAmount,
@@ -308,6 +310,6 @@ $('#sendChat').onclick=sendChat;
 $('#chatText').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});
 // Restauración persistente: si Android mata el proceso mientras Google Maps está abierto,
 // al volver Ruteo reconstruye la pantalla y la ruta desde localStorage.
-window.addEventListener('beforeunload',saveState);
-window.addEventListener('pagehide',saveState);
+window.addEventListener('beforeunload',()=>{if(!resetting)saveState()});
+window.addEventListener('pagehide',()=>{if(!resetting)saveState()});
 restoreState();
