@@ -1,10 +1,12 @@
 const $=s=>document.querySelector(s);
 const STATE_KEY='ruteoStateV33';
 function resetRuteo(){
+  // Borrado duro: no usamos showStep() aquí porque esa función vuelve a guardar el estado.
   try{localStorage.removeItem(STATE_KEY);}catch(e){}
   try{sessionStorage.clear();}catch(e){}
-  // Reset manual: volver siempre a la pantalla inicial sin conservar estado.
-  window.location.href=window.location.pathname+'?newRoute=1';
+  // Recarga completa y URL nueva para impedir que el estado anterior se restaure.
+  const cleanUrl=window.location.origin+window.location.pathname+'?newRoute='+Date.now();
+  window.location.replace(cleanUrl);
 }
 let pois=[], selected=new Set(), mode='driving', optimized=[], chosenPlace=null, suggestTimer=null, visitMode='walking', visitAmount='essential', aiProvider='', aiModel='';
 let currentStep=1;
